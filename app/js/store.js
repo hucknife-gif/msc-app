@@ -15,8 +15,36 @@ const Store = (() => {
     override: 'msc.override.', // + regionId
     obs: 'msc.fieldObs',
     users: 'msc.users', // admin-created accounts (hashed, never plaintext)
-    videos: 'msc.videos' // admin-added YouTube videos
+    videos: 'msc.videos', // admin-added YouTube videos
+    favs: 'msc.favProfiles' // usernames favourited in the tours feed
   };
+
+  // ---- IndexedDB: GPS tracks and photos are too big for localStorage ----
+  const DB_NAME = 'msc-db';
+  let dbPromise = null;
+  function db() {
+    if (!dbPromise) {
+      dbPromise = new Promise((resolve, reject) => {
+        const req = indexedDB.open(DB_NAME, 1);
+        req.onupgradeneeded = () => {
+          req.result.createObjectStore('trips', { keyPath: 'id' });
+          req.result.createObjectStore('media', { keyPath: 'id' });
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+    return dbPromise;
+  }
+  async function idb(storeName, mode, fn) {
+    const d = await db();
+    return new Promise((resolve, reject) => {
+      const tx = d.transaction(storeName, mode);
+      const res = fn(tx.objectStore(storeName));
+      tx.oncomplete = () => resolve(res.result !== undefined ? res.result : res);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
 
   // Accepts a raw 11-char YouTube ID or any common URL form
   // (watch?v=, youtu.be/, /shorts/, /embed/, /live/). Returns the ID or null.
@@ -90,12 +118,60 @@ const Store = (() => {
     },
     removeVideo(id) { write(K.videos, this.customVideos().filter((v) => v.id !== id)); },
 
+    // ---- tours: GPS tracks, trip posts, on-device forum ----
+    // A trip: { id, owner, ownerName, title, desc, started, ended,
+    //   points: [[tOffsetSec, lat, lng, altM]...], stats: {dist, gain, loss,
+    //   maxAlt, durSec}, photos: [mediaId...], videoLinks: [{id?, url, label}],
+    //   obs: [inline observation notes], shared, likes: [user...],
+    //   comments: [{id, user, name, text, at}] }
+    async saveTrip(trip) { await idb('trips', 'readwrite', (s) => s.put(trip)); return trip.id; },
+    async getTrip(id) { return idb('trips', 'readonly', (s) => s.get(id)); },
+    async allTrips() {
+      const trips = await idb('trips', 'readonly', (s) => s.getAll());
+      return (trips || []).sort((a, b) => b.started - a.started);
+    },
+    async deleteTrip(id) {
+      const t = await this.getTrip(id);
+      for (const m of t?.photos || []) await idb('media', 'readwrite', (s) => s.delete(m));
+      await idb('trips', 'readwrite', (s) => s.delete(id));
+    },
+    async savePhoto(id, blob) { await idb('media', 'readwrite', (s) => s.put({ id, blob })); },
+    async getPhoto(id) { return (await idb('media', 'readonly', (s) => s.get(id)))?.blob || null; },
+
+    // forum interactions (per signed-in local account)
+    async toggleLike(tripId) {
+      const t = await this.getTrip(tripId);
+      const u = this.session()?.user;
+      if (!t || !u) return null;
+      t.likes = t.likes || [];
+      t.likes = t.likes.includes(u) ? t.likes.filter((x) => x !== u) : [...t.likes, u];
+      await this.saveTrip(t);
+      return t.likes.length;
+    },
+    async addComment(tripId, text) {
+      const t = await this.getTrip(tripId);
+      const s = this.session();
+      const body = String(text || '').trim().slice(0, 500);
+      if (!t || !s || !body) return null;
+      t.comments = t.comments || [];
+      t.comments.push({ id: 'c-' + Date.now(), user: s.user, name: s.name, text: body, at: Date.now() });
+      await this.saveTrip(t);
+      return t.comments;
+    },
+    favProfiles() { return read(K.favs, []); },
+    toggleFav(user) {
+      const f = this.favProfiles();
+      write(K.favs, f.includes(user) ? f.filter((x) => x !== user) : [...f, user]);
+      return this.favProfiles();
+    },
+
     // ---- migration (to a future hosted backend) ----
     // Exports salted SHA-256 credential records — never plaintext (plaintext
     // is never stored, so "transferring passwords" means transferring hashes;
     // the new system verifies with the same scheme on first login, then
     // re-hashes to its own. Standard staged auth migration.)
-    exportBundle() {
+    async exportBundle() {
+      const trips = (await this.allTrips()).map((t) => ({ ...t, photos: [] })); // media blobs stay on-device
       return {
         format: 'msc-app-migration',
         version: 1,
@@ -103,6 +179,8 @@ const Store = (() => {
         hashScheme: 'sha256(msc:<user>:<pin>)',
         users: this.customUsers(),
         videos: this.customVideos(),
+        trips,
+        favProfiles: this.favProfiles(),
         observations: this.observations(),
         overrides: Object.fromEntries(
           ['main-range', 'dividing-range'].map((r) => [r, this.override(r)]).filter(([, v]) => v)
@@ -110,10 +188,16 @@ const Store = (() => {
         settings: this.custom()
       };
     },
-    importBundle(bundle) {
+    async importBundle(bundle) {
       if (bundle?.format !== 'msc-app-migration' || bundle.version !== 1) {
         return { error: 'Not a valid migration bundle.' };
       }
+      for (const t of Array.isArray(bundle.trips) ? bundle.trips : []) {
+        if (typeof t?.id === 'string' && /^trip-\d+$/.test(t.id) && Array.isArray(t.points)) {
+          await this.saveTrip({ ...t, photos: [] });
+        }
+      }
+      if (Array.isArray(bundle.favProfiles)) write(K.favs, bundle.favProfiles.filter((f) => typeof f === 'string').slice(0, 100));
       const clean = (Array.isArray(bundle.users) ? bundle.users : []).filter((u) =>
         typeof u?.user === 'string' && /^[a-z0-9_.-]{1,40}$/.test(u.user) &&
         typeof u?.hash === 'string' && /^[0-9a-f]{64}$/.test(u.hash) &&

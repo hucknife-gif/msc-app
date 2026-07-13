@@ -728,7 +728,8 @@ const SAFETY_LINKS = {
     { label: 'Become an MSC member ($50/yr)', url: 'https://mountainsafetycollective.org/membership' },
     { label: 'MSC blog', url: 'https://mountainsafetycollective.org/blog' },
     { label: 'MSC on YouTube', url: 'https://www.youtube.com/channel/UCnqIbssyBn7QDnySaMXPaJA' },
-    { label: 'Instagram @mountain_safety_collective', url: 'https://www.instagram.com/mountain_safety_collective' }
+    { label: 'Instagram @mountain_safety_collective', url: 'https://www.instagram.com/mountain_safety_collective' },
+    { label: 'Facebook — Mountain Safety Collective', url: 'https://www.facebook.com/mountainsafetycollective' }
   ]
 };
 

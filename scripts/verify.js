@@ -6,7 +6,7 @@ const path = require('path');
 
 const BASE = process.env.BASE_URL || 'http://localhost:8642/index.html';
 const OUT = path.join(__dirname, '..', 'docs', 'screens');
-const VIEWS = ['today', 'report', 'observe', 'learn', 'safety',
+const VIEWS = ['today', 'report', 'observe', 'learn', 'safety', 'tours',
   'learn/backcountry-tips', 'learn/companion-rescue', 'learn/videos',
   'report--vic', 'report--hazards', 'account'];
 
@@ -21,6 +21,13 @@ const iPhone = {
     headless: 'new'
   });
   const page = await browser.newPage();
+  await browser.defaultBrowserContext().overridePermissions('http://localhost:8642', ['geolocation']);
+  const cdp = await page.createCDPSession();
+  const setGeo = async (lat, lng, alt) => {
+    try { await cdp.send('Emulation.setGeolocationOverride', { latitude: lat, longitude: lng, accuracy: 10, altitude: alt }); }
+    catch { await page.setGeolocation({ latitude: lat, longitude: lng, accuracy: 10 }); }
+  };
+  await setGeo(-36.455, 148.263, 1760);
   await page.setUserAgent(iPhone.userAgent);
   await page.setViewport(iPhone.viewport);
   // deterministic tests: pin the app to bundled sample data (no live fetch)
@@ -31,7 +38,15 @@ const iPhone = {
   // the element; the isolated-world query returns null). waitForSelector
   // polls, so interactions ride out the context churn.
   const type = async (sel, text) => (await page.waitForSelector(sel, { timeout: 8000 })).type(text);
-  const click = async (sel) => (await page.waitForSelector(sel, { timeout: 8000 })).click();
+  const click = async (sel) => {
+    const h = await page.waitForSelector(sel, { timeout: 8000 });
+    // centre it first — puppeteer's minimal scroll can leave targets under
+    // the fixed tab bar, sending the click to a tab instead
+    await h.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+    return h.click();
+  };
+
+  const domClick = (sel) => page.evaluate((q) => document.querySelector(q).click(), sel);
 
   const problems = [];
   page.on('console', (m) => {
@@ -74,7 +89,7 @@ const iPhone = {
       learn: 'Learn', safety: 'Call 000', 'learn/backcountry-tips': 'Ten backcountry',
       'report--vic': 'VIC Dividing Range', 'report--hazards': 'Primary hazard',
       'learn/companion-rescue': 'ten-minute', 'learn/videos': 'Video library',
-      account: 'Demo accounts'
+      tours: 'Sign in to record', account: 'Demo accounts'
     };
     const text = await page.evaluate(() => document.querySelector('#view').innerText);
     const marker = MARKERS[view];
@@ -209,6 +224,63 @@ const iPhone = {
   archText = await page.evaluate(() => document.querySelector('#view').innerText.toLowerCase());
   if (!archText.includes('report date')) problems.push('member archive did not unlock');
   await page.screenshot({ path: path.join(OUT, 'archive-member.png') });
+
+  // tours: record a simulated GPS track, finish, edit, share, like, comment
+  await page.evaluate(() => { location.hash = '#/tours/track'; });
+  await new Promise((r) => setTimeout(r, 500));
+  await domClick('#tt-start');
+  await new Promise((r) => setTimeout(r, 600));
+  const FIXES = [
+    [-36.4545, 148.2635, 1775], [-36.4540, 148.2641, 1792], [-36.4534, 148.2647, 1810],
+    [-36.4529, 148.2652, 1801], [-36.4524, 148.2657, 1788]
+  ];
+  for (const [la, ln, al] of FIXES) {
+    await setGeo(la, ln, al);
+    await new Promise((r) => setTimeout(r, 650));
+  }
+  const trackStats = await page.evaluate(() => ({
+    dist: document.querySelector('#tt-dist')?.textContent,
+    time: document.querySelector('#tt-time')?.textContent
+  }));
+  if (!trackStats.dist || trackStats.dist === '0 m') problems.push('tracker did not accumulate distance');
+  // pin an observation mid-tour
+  await page.evaluate(() => { document.getElementById('tt-obs-text').value = 'Wind slab forming on SE rolls'; });
+  await page.evaluate(() => document.getElementById('tt-obs-form').requestSubmit());
+  await new Promise((r) => setTimeout(r, 300));
+  await page.screenshot({ path: path.join(OUT, 'tour-tracking.png') });
+  await domClick('#tt-finish');
+  await new Promise((r) => setTimeout(r, 900));
+  if (!/#\/tours\/trip-/.test(await page.evaluate(() => location.hash))) problems.push('finish did not open the trip page');
+  await new Promise((r) => setTimeout(r, 700));
+  const detail = await page.evaluate(() => document.querySelector('#view').innerText.toLowerCase());
+  if (!detail.includes('elevation')) problems.push('trip detail missing elevation section');
+  if (!detail.includes('wind slab forming')) problems.push('mid-tour observation missing from trip');
+  // title edit + share + like + comment
+  await page.evaluate(() => {
+    document.getElementById('te-title').value = 'Twynam morning lap';
+    document.getElementById('trip-edit').requestSubmit();
+  });
+  await new Promise((r) => setTimeout(r, 500));
+  await domClick('#trip-share');
+  await new Promise((r) => setTimeout(r, 500));
+  await domClick('#trip-like');
+  await new Promise((r) => setTimeout(r, 600));
+  await page.evaluate(() => {
+    document.getElementById('trip-comment-text').value = 'Great line choice off the saddle.';
+    document.getElementById('trip-comment-form').requestSubmit();
+  });
+  await new Promise((r) => setTimeout(r, 700));
+  const detail2 = await page.evaluate(() => document.querySelector('#view').innerText.toLowerCase());
+  if (!detail2.includes('twynam morning lap')) problems.push('trip title edit failed');
+  if (!detail2.includes('great line choice')) problems.push('trip comment failed');
+  if (!detail2.includes('▲ 1')) problems.push('trip like failed');
+  await page.screenshot({ path: path.join(OUT, 'tour-detail.png') });
+  // feed shows the shared tour
+  await page.evaluate(() => { location.hash = '#/tours'; });
+  await new Promise((r) => setTimeout(r, 700));
+  const feedText = await page.evaluate(() => document.querySelector('#view').innerText.toLowerCase());
+  if (!feedText.includes('twynam morning lap')) problems.push('shared tour missing from feed');
+  await page.screenshot({ path: path.join(OUT, 'tours-feed.png') });
 
   // dark mode toggle
   await page.evaluate(() => { localStorage.removeItem('msc.session'); location.hash = '#/today'; });
