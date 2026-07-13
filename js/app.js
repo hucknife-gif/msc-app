@@ -24,7 +24,8 @@ const ICONS = {
   chevL:    '<path d="m15 5-7 7 7 7"/>',
   external: '<path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M19 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6"/>',
   send:     '<path d="m21 3-8 18-3-8-8-3Z"/><path d="M21 3 10 13"/>',
-  clock:    '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>'
+  clock:    '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>',
+  play:     '<circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l6-3.5Z"/>'
 };
 const icon = (name, cls = 'icon') =>
   `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
@@ -712,6 +713,9 @@ function viewAccount() {
       <button class="btn" type="submit">Save customisation</button>
     </form>
     <button class="btn secondary" id="clear-override">Revert forecast to baseline</button>
+    <a class="card tappable" href="#/learn/videos"><div class="row">${icon('play', 'icon accent')}
+      <div class="grow"><h3>Manage video library</h3><div class="sub">Add or remove YouTube videos in the Learn tab</div></div>
+      ${icon('chevR', 'icon chev')}</div></a>
     ${rule('User management', `${Store.allUsers().length} accounts`)}
     <div class="card">
       ${Store.allUsers().map((u) => `
@@ -915,23 +919,101 @@ function viewObserve() {
       </div>`).join('')}`;
 }
 
+// article body blocks: plain string = paragraph; {h} = section heading;
+// {list} = bullet list; {note} = callout; {fig, caption} = inline diagram
+function learnBlock(b) {
+  if (typeof b === 'string') return `<p>${esc(b)}</p>`;
+  if (b.h) return `<h3 class="article-h">${esc(b.h)}</h3>`;
+  if (b.list) return `<ul class="advice">${b.list.map((i) => `<li>${esc(i)}</li>`).join('')}</ul>`;
+  if (b.note) return `<div class="article-note">${esc(b.note)}</div>`;
+  if (b.fig) {
+    const svg = LEARN_FIGS[b.fig];
+    return svg ? `<figure class="learn-fig">${svg}${b.caption ? `<figcaption>${esc(b.caption)}</figcaption>` : ''}</figure>` : '';
+  }
+  return '';
+}
+
+function quizCard(t) {
+  if (!t.quiz || !t.quiz.length) return '';
+  return `${rule('Check yourself', `${t.quiz.length} questions`)}
+    ${t.quiz.map((q, qi) => `
+    <div class="card quiz" data-quiz="${qi}">
+      <p class="quiz-q">${esc(q.q)}</p>
+      ${q.options.map((o, oi) => `<button class="quiz-opt" data-q="${qi}" data-o="${oi}">${esc(o)}</button>`).join('')}
+      <div class="quiz-why" hidden>${esc(q.why)}</div>
+    </div>`).join('')}`;
+}
+
+// video library: MSC's YouTube channel, embedded on demand.
+// IDs are validated (11-char YouTube form) before ever reaching an iframe src.
+function viewVideos() {
+  const vids = Store.allVideos();
+  const admin = Store.role() === 'forecaster';
+  return `<button class="back-btn" data-nav="#/learn">${icon('chevL', 'icon')} Learn</button>
+    <h1>Video library<span class="h1-sub">From the MSC YouTube channel</span></h1>
+    <p class="lede">Tap a video to play it here (needs reception), or open it in YouTube.</p>
+    ${vids.map((v) => `
+    <div class="card video-card">
+      <div class="video-slot" id="vs-${esc(v.id)}">
+        <button class="video-thumb" data-play="${esc(v.id)}" aria-label="Play: ${esc(v.title)}">
+          <img src="https://i.ytimg.com/vi/${esc(v.id)}/hqdefault.jpg" alt="" loading="lazy">
+          <span class="video-play">${icon('play', 'icon')}</span>
+        </button>
+      </div>
+      <h3 class="video-title">${esc(v.title)}</h3>
+      ${v.note ? `<div class="sub">${esc(v.note)}</div>` : ''}
+      <div class="row video-actions">
+        <a class="mini-btn" target="_blank" rel="noopener" href="https://www.youtube.com/watch?v=${esc(v.id)}">Watch on YouTube</a>
+        ${admin && !v.seeded ? `<button class="mini-btn danger" data-del-video="${esc(v.id)}">Remove</button>` : ''}
+      </div>
+    </div>`).join('')}
+    <a class="card tappable" target="_blank" rel="noopener" href="${MSC_YT_CHANNEL}"><div class="row">
+      ${icon('external', 'icon accent')}
+      <div class="grow"><h3>MSC on YouTube</h3><div class="sub">The full channel — @mountainsafetycollective</div></div>
+      ${icon('chevR', 'icon chev')}</div></a>
+    ${admin ? `
+    <form id="addvideo-form" class="card">
+      <h3>Add a video</h3>
+      <p class="sub" style="margin-top:4px">Paste a YouTube link — it appears in every user’s library on this device build.</p>
+      <label for="av-url">YouTube link or video ID</label>
+      <input id="av-url" name="url" inputmode="url" autocapitalize="none" required>
+      <label for="av-title">Title</label>
+      <input id="av-title" name="title" maxlength="90" required>
+      <label for="av-note">Note (optional)</label>
+      <input id="av-note" name="note" maxlength="140">
+      <p class="note" id="av-err" role="alert" hidden></p>
+      <button class="btn" type="submit">Add to library</button>
+    </form>` : ''}`;
+}
+
 function viewLearn(topicId) {
+  if (topicId === 'videos') return viewVideos();
   if (topicId) {
     const t = LEARN_TOPICS.find((x) => x.id === topicId);
     if (t) {
       return `<button class="back-btn" data-nav="#/learn">${icon('chevL', 'icon')} Learn</button>
         <h1>${esc(t.title)}</h1>
-        <div class="card article">${t.body.map((p) => `<p>${esc(p)}</p>`).join('')}</div>`;
+        <div class="card article">${t.body.map(learnBlock).join('')}</div>
+        ${quizCard(t)}
+        ${t.sources ? `<p class="note">Drawn from: ${esc(t.sources)}</p>` : ''}`;
     }
   }
+  const groups = [...new Set(LEARN_TOPICS.map((t) => t.group || 'Reference'))];
   return `
     <h1>Learn</h1>
-    <p class="lede">Hazard knowledge for the Australian Alps — how the ratings work and the habits that keep you alive.</p>
-    ${LEARN_TOPICS.map((t) => `
+    <p class="lede">Hazard knowledge for the Australian Alps — international avalanche practice, adapted to what actually kills people here.</p>
+    ${groups.map((g) => `
+      ${rule(g)}
+      ${LEARN_TOPICS.filter((t) => (t.group || 'Reference') === g).map((t) => `
       <a class="card tappable" href="#/learn/${t.id}"><div class="row">
-        ${icon('book', 'icon accent')}
+        ${icon(t.icon || 'book', 'icon accent')}
         <div class="grow"><h3>${esc(t.title)}</h3><div class="sub">${esc(t.summary)}</div></div>
-        ${icon('chevR', 'icon chev')}</div></a>`).join('')}`;
+        ${icon('chevR', 'icon chev')}</div></a>`).join('')}`).join('')}
+    ${rule('Video library')}
+    <a class="card tappable" href="#/learn/videos"><div class="row">
+      ${icon('play', 'icon accent')}
+      <div class="grow"><h3>MSC video library</h3><div class="sub">${Store.allVideos().length} videos from the MSC YouTube channel — watch in the app</div></div>
+      ${icon('chevR', 'icon chev')}</div></a>`;
 }
 
 function viewSafety() {
@@ -1031,6 +1113,44 @@ function bindView() {
       b.setAttribute('aria-expanded', String(open));
       b.textContent = open ? 'About –' : 'About +';
     }));
+
+  // learn practice quizzes: first tap locks the question, shows the answer
+  document.querySelectorAll('.quiz-opt').forEach((b) =>
+    b.addEventListener('click', () => {
+      const topic = LEARN_TOPICS.find((x) => x.id === (location.hash.split('/')[2] || ''));
+      const q = topic?.quiz?.[+b.dataset.q];
+      if (!q) return;
+      const card = b.closest('.quiz');
+      card.querySelectorAll('.quiz-opt').forEach((o) => {
+        o.disabled = true;
+        if (+o.dataset.o === q.a) o.classList.add('right');
+      });
+      if (+b.dataset.o !== q.a) b.classList.add('wrong');
+      card.querySelector('.quiz-why').removeAttribute('hidden');
+    }));
+
+  // video library: swap thumbnail for the embed on tap; admin add/remove
+  document.querySelectorAll('[data-play]').forEach((b) =>
+    b.addEventListener('click', () => {
+      const id = b.dataset.play;
+      if (!/^[A-Za-z0-9_-]{11}$/.test(id)) return;
+      document.getElementById('vs-' + id).innerHTML =
+        `<iframe class="video-frame" src="https://www.youtube-nocookie.com/embed/${id}?autoplay=1&playsinline=1"
+          title="MSC video" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>`;
+    }));
+  document.querySelectorAll('[data-del-video]').forEach((b) =>
+    b.addEventListener('click', () => {
+      if (confirm('Remove this video from the library?')) { Store.removeVideo(b.dataset.delVideo); render(); }
+    }));
+  const avf = $('#addvideo-form');
+  if (avf) avf.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const d = Object.fromEntries(new FormData(avf).entries());
+    const res = Store.addVideo(d);
+    if (res.error) {
+      const err = $('#av-err'); err.textContent = res.error; err.removeAttribute('hidden');
+    } else render();
+  });
 
   // archive loader
   const al = $('#arch-load');
