@@ -69,6 +69,17 @@ const SAMPLE_REPORTS = {
     dayScore: 'extra-caution',
     synopsis: 'A cold front crossing the ranges this afternoon brings strengthening north-westerlies ahead of it and falling temperatures behind it. Surfaces refroze overnight above 1900 m and will stay firm on shaded aspects all day. Visibility deteriorates from mid-afternoon.',
     weather: { temp: '-4°C', wind: 'NW 45–65 km/h', freezing: '1400 m', snow24: '5–10 cm from tonight' },
+    trend: {
+      hours: ['06', '09', '12', '15', '18', '21', '00', '03'],
+      temp: [-4, -3, -2, -3, -6, -8, -9, -10],
+      wind: [35, 45, 55, 65, 60, 50, 45, 40],
+      snow: [0, 0, 0, 0, 2, 4, 3, 2]
+    },
+    // wind-slab loading by aspect, 0 (minimal) → 3 (heavy)
+    aspects: {
+      alpine:    { N: 1, NE: 2, E: 3, SE: 3, S: 2, SW: 1, W: 0, NW: 0 },
+      subalpine: { N: 0, NE: 1, E: 1, SE: 1, S: 0, SW: 0, W: 0, NW: 0 }
+    },
     bands: {
       alpine: {
         dangers: { exposure: 'Severe', visibility: 'Poor', surface: 'Icy', avalanche: 'Moderate' },
@@ -98,6 +109,16 @@ const SAMPLE_REPORTS = {
     dayScore: 'usual-caution',
     synopsis: 'A quieter day on the Victorian side. Light westerlies, freezing level near 1300 m, and a settled snowpack after last week’s storm cycle. A good window for longer tours before the front arrives overnight.',
     weather: { temp: '-1°C', wind: 'W 20–30 km/h', freezing: '1300 m', snow24: 'Nil until overnight' },
+    trend: {
+      hours: ['06', '09', '12', '15', '18', '21', '00', '03'],
+      temp: [-3, -1, 1, 2, 0, -2, -4, -5],
+      wind: [15, 20, 25, 30, 28, 35, 45, 55],
+      snow: [0, 0, 0, 0, 0, 0, 1, 3]
+    },
+    aspects: {
+      alpine:    { N: 0, NE: 1, E: 2, SE: 1, S: 0, SW: 0, W: 0, NW: 0 },
+      subalpine: { N: 0, NE: 0, E: 1, SE: 0, S: 0, SW: 0, W: 0, NW: 0 }
+    },
     bands: {
       alpine: {
         dangers: { exposure: 'Notable', visibility: 'Good', surface: 'Firm', avalanche: 'Low' },
