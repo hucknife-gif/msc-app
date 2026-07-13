@@ -16,11 +16,20 @@ const Store = (() => {
     obs: 'msc.fieldObs'
   };
 
-  // seeded demo accounts (documented on the Account screen)
+  // seeded demo accounts (documented on the Account screen).
+  // PINs stored as SHA-256("msc:<user>:<pin>") — no plaintext credentials
+  // in the bundle. A real backend replaces this with server-side auth.
   const USERS = [
-    { user: 'forecaster', pin: '2626', name: 'Duty Forecaster', role: 'forecaster' },
-    { user: 'observer',   pin: '1850', name: 'Field Observer',  role: 'observer' }
+    { user: 'forecaster', hash: '68160fb7dedc9d89408ddf5862993f43f0be6c25095359f83d265c26b15ee020', name: 'Duty Forecaster', role: 'forecaster' },
+    { user: 'observer',   hash: 'cfc27a835d6eb9ce1e7c90313ef203ae70aae9a2d918a3c3f6d81d98ce9b4d8c', name: 'Field Observer',  role: 'observer' }
   ];
+
+  const SESSION_TTL = 12 * 60 * 60 * 1000; // 12 h
+
+  async function sha256Hex(s) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+    return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+  }
 
   const read = (k, fallback) => {
     try { return JSON.parse(localStorage.getItem(k)) ?? fallback; }
@@ -30,15 +39,21 @@ const Store = (() => {
 
   return {
     // ---- auth ----
-    login(user, pin) {
-      const u = USERS.find((x) => x.user === user.trim().toLowerCase() && x.pin === pin.trim());
+    async login(user, pin) {
+      const uname = String(user).trim().toLowerCase().slice(0, 40);
+      const hash = await sha256Hex(`msc:${uname}:${String(pin).trim()}`);
+      const u = USERS.find((x) => x.user === uname && x.hash === hash);
       if (!u) return null;
       const session = { user: u.user, name: u.name, role: u.role, since: Date.now() };
       write(K.session, session);
       return session;
     },
     logout() { localStorage.removeItem(K.session); },
-    session() { return read(K.session, null); },
+    session() {
+      const s = read(K.session, null);
+      if (s && Date.now() - (s.since || 0) > SESSION_TTL) { this.logout(); return null; }
+      return s;
+    },
     role() { return this.session()?.role ?? 'guest'; },
 
     // ---- theme ----

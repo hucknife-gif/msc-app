@@ -169,25 +169,6 @@ function aspectRose(aspects, interactive = true) {
   </svg>`;
 }
 
-// elevation cross-section: ridgeline profile split into rated bands
-function elevationSection(rep) {
-  const bands = [
-    { key: 'alpine', label: 'ALPINE', elev: '1850 m+', y: 12, h: 34 },
-    { key: 'subalpine', label: 'SUBALPINE', elev: '< treeline', y: 46, h: 34 }
-  ];
-  return `<svg class="elev" viewBox="0 0 340 96">
-    <path d="M0 96 L0 78 L54 58 L96 70 L150 22 L196 48 L244 30 L296 56 L340 40 L340 96 Z" class="elev-mtn"/>
-    ${bands.map((b) => {
-      const sev = LEVEL_SEVERITY.avalanche[rep.bands[b.key].dangers.avalanche] ?? 0;
-      return `
-      <line x1="8" x2="332" y1="${b.y + b.h}" y2="${b.y + b.h}" class="elev-line"/>
-      <rect x="8" y="${b.y}" width="5" height="${b.h}" rx="2.5" class="sev-${sev}"/>
-      <text x="22" y="${b.y + 14}" class="elev-band">${b.label}</text>
-      <text x="22" y="${b.y + 27}" class="elev-meta">${b.elev} · Avalanche ${esc(rep.bands[b.key].dangers.avalanche)}</text>`;
-    }).join('')}
-  </svg>`;
-}
-
 // ---------- MSC-style report graphics (per the real report presentation) ----------
 const HAZ_BLUE = '#29abe2';
 
@@ -547,7 +528,12 @@ function viewAccount() {
     <a class="card tappable" href="#/observe"><div class="row">${icon('binoculars', 'icon accent')}
       <div class="grow"><h3>Record field data</h3><div class="sub">Snow profiles, stability tests and observations — CAA-style conventions</div></div>
       ${icon('chevR', 'icon chev')}</div></a>` : ''}
-    <button class="btn secondary" id="logout-btn">Sign out</button>`;
+    <button class="btn secondary" id="logout-btn">Sign out</button>
+    ${rule('Your data', 'This device')}
+    <div class="card">
+      <p class="sub">Everything this app stores — session, saved snow profiles, forecast updates and settings — lives on this device only. You can erase all of it in one tap.</p>
+      <button class="btn secondary danger-btn" id="wipe-btn">Delete all my data</button>
+    </div>`;
 }
 
 const SCORE_OPTS = Object.keys(DAY_SCORES);
@@ -764,7 +750,11 @@ function viewSafety() {
         ${icon('mountain', 'icon accent')}
         <div class="grow"><h3>${esc(l.label)}</h3></div>
         ${icon('external', 'icon chev')}</div></a>`).join('')}
-    <p class="note">Unofficial personal app. All safety content is general guidance — formal training (AST1) is the real thing. Mountain Safety Collective is a not-for-profit: mountainsafetycollective.org/membership</p>`;
+    ${rule('About this app')}
+    <div class="card">
+      <p class="sub">An independent companion app for Mountain Safety Collective's Backcountry Conditions Reports, built as a concept by Zac Reid. Not an official MSC product. All safety content is general guidance — formal training (AST1) is the real thing.</p>
+      <p class="sub" style="margin-top:8px">MSC is a not-for-profit keeping Australian backcountry travellers alive. If this app is useful, join: mountainsafetycollective.org/membership</p>
+    </div>`;
 }
 
 // ---------- router ----------
@@ -823,14 +813,25 @@ function bindView() {
 
   // login / logout / customisation
   const lf = $('#login-form');
-  if (lf) lf.addEventListener('submit', (e) => {
+  if (lf) lf.addEventListener('submit', async (e) => {
     e.preventDefault();
+    const btn = lf.querySelector('.btn');
+    btn.disabled = true;
     const d = Object.fromEntries(new FormData(lf).entries());
-    if (Store.login(d.user || '', d.pin || '')) render();
+    const ok = await Store.login(d.user || '', d.pin || '');
+    btn.disabled = false;
+    if (ok) render();
     else $('#login-err').removeAttribute('hidden');
   });
   const lo = $('#logout-btn');
   if (lo) lo.addEventListener('click', () => { Store.logout(); render(); });
+  const wipe = $('#wipe-btn');
+  if (wipe) wipe.addEventListener('click', () => {
+    if (confirm('Delete all app data stored on this device? This clears your session, saved profiles, forecast updates and settings.')) {
+      localStorage.clear();
+      applyTheme(); applyCustom(); render();
+    }
+  });
   const cf = $('#custom-form');
   if (cf) cf.addEventListener('submit', (e) => {
     e.preventDefault();
