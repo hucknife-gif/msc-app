@@ -1,6 +1,6 @@
 // MSC offline-first service worker — cache the full app shell so the app
 // works with no reception in the backcountry.
-const CACHE = 'msc-v5';
+const CACHE = 'msc-v6';
 const ASSETS = [
   './',
   './index.html',

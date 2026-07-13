@@ -7,7 +7,8 @@ const path = require('path');
 const BASE = process.env.BASE_URL || 'http://localhost:8642/index.html';
 const OUT = path.join(__dirname, '..', 'docs', 'screens');
 const VIEWS = ['today', 'report', 'observe', 'learn', 'safety',
-  'learn/backcountry-tips', 'report--vic', 'report--hazards', 'account'];
+  'learn/backcountry-tips', 'learn/companion-rescue', 'learn/videos',
+  'report--vic', 'report--hazards', 'account'];
 
 const iPhone = {
   viewport: { width: 393, height: 852, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
@@ -33,7 +34,13 @@ const iPhone = {
   const click = async (sel) => (await page.waitForSelector(sel, { timeout: 8000 })).click();
 
   const problems = [];
-  page.on('console', (m) => { if (m.type() === 'error') problems.push(`console error: ${m.text()}`); });
+  page.on('console', (m) => {
+    if (m.type() !== 'error') return;
+    // YouTube thumbnail fetch failures are environmental (offline runs,
+    // missing IDs), not app bugs — everything else still fails the build
+    if ((m.location()?.url || '').includes('i.ytimg.com')) return;
+    problems.push(`console error: ${m.text()}`);
+  });
   page.on('pageerror', (e) => problems.push(`page error: ${e.message}`));
 
   await page.goto(BASE + '#/today', { waitUntil: 'networkidle2' });
@@ -66,6 +73,7 @@ const iPhone = {
       today: 'DAY SCORE', report: 'Conditions report', observe: 'Observations',
       learn: 'Learn', safety: 'Call 000', 'learn/backcountry-tips': 'Ten backcountry',
       'report--vic': 'VIC Dividing Range', 'report--hazards': 'Primary hazard',
+      'learn/companion-rescue': 'ten-minute', 'learn/videos': 'Video library',
       account: 'Demo accounts'
     };
     const text = await page.evaluate(() => document.querySelector('#view').innerText);
@@ -98,6 +106,24 @@ const iPhone = {
   await page.screenshot({ path: path.join(OUT, 'sheet-aspect.png') });
   await click('.sheet-backdrop');
 
+  // learn: diagrams render, quiz locks an answer and reveals the explanation
+  await page.evaluate(() => { location.hash = '#/learn/companion-rescue'; });
+  await new Promise((r) => setTimeout(r, 450));
+  const figCount = await page.evaluate(() => document.querySelectorAll('.learn-fig svg').length);
+  if (!figCount) problems.push('learn figures did not render');
+  await click('.quiz .quiz-opt');
+  await new Promise((r) => setTimeout(r, 250));
+  const quiz = await page.evaluate(() => {
+    const card = document.querySelector('.quiz');
+    return {
+      revealed: !card.querySelector('.quiz-why').hasAttribute('hidden'),
+      marked: !!card.querySelector('.quiz-opt.right'),
+      locked: card.querySelector('.quiz-opt').disabled
+    };
+  });
+  if (!quiz.revealed || !quiz.marked || !quiz.locked) problems.push('quiz interaction failed');
+  await page.screenshot({ path: path.join(OUT, 'learn-quiz.png') });
+
   // account flow: forecaster login → editor gate opens
   await page.evaluate(() => { localStorage.clear(); location.hash = '#/account'; });
   await new Promise((r) => setTimeout(r, 450));
@@ -127,6 +153,22 @@ const iPhone = {
   await new Promise((r) => setTimeout(r, 500));
   const userList = await page.evaluate(() => document.querySelector('#view').innerText.toLowerCase());
   if (!userList.includes('patroller1')) problems.push('admin user creation failed');
+
+  // admin video library: add a video from a pasted URL
+  await page.evaluate(() => { location.hash = '#/learn/videos'; });
+  await new Promise((r) => setTimeout(r, 450));
+  await page.evaluate(() => {
+    document.getElementById('av-url').value = 'https://youtu.be/L6yjtjyRo0E'; // real MSC video (AGM 2024), not in seeds
+    document.getElementById('av-title').value = 'Test clip';
+    document.getElementById('addvideo-form').requestSubmit();
+  });
+  await new Promise((r) => setTimeout(r, 400));
+  const vidText = await page.evaluate(() => document.querySelector('#view').innerText);
+  if (!vidText.includes('Test clip')) problems.push('admin add-video failed');
+  await page.screenshot({ path: path.join(OUT, 'videos-admin.png') });
+  await page.evaluate(() => { location.hash = '#/account'; });
+  await new Promise((r) => setTimeout(r, 450));
+
   await page.evaluate(() => { localStorage.removeItem('msc.session'); render(); });
   await new Promise((r) => setTimeout(r, 450));
   await type('#lg-user', 'patroller1');

@@ -470,6 +470,67 @@ ul.advice li::before {
 
 /* ---------- learn ---------- */
 .article p { margin-bottom: var(--space-3); font-size: 15px; }
+.article .article-h {
+  font-family: var(--display); font-weight: 700; font-size: 16px;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  margin: var(--space-4) 0 var(--space-2); color: var(--text);
+  padding-top: var(--space-3); border-top: 1px solid var(--line);
+}
+.article .article-h:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.article ul.advice { margin-bottom: var(--space-3); }
+.article-note {
+  background: var(--accent-soft); border-left: 3px solid var(--accent);
+  padding: 10px 12px; border-radius: 6px; font-size: 14px;
+  margin-bottom: var(--space-3);
+}
+.learn-fig { margin: var(--space-2) 0 var(--space-3); }
+.learn-fig svg { width: 100%; height: auto; display: block; }
+.learn-fig figcaption { font-size: 12.5px; color: var(--mist); margin-top: 6px; }
+/* diagram palette: class-driven so figures follow the theme */
+.learn-fig .fg { stroke: var(--text); }
+.learn-fig .fg-fill { fill: var(--text); }
+.learn-fig .mute { stroke: var(--mist-faint); }
+.learn-fig .mute-fill { fill: var(--mist-faint); }
+.learn-fig .acc { stroke: var(--accent); }
+.learn-fig .acc-fill { fill: var(--accent); }
+.learn-fig .blue { stroke: var(--haz-blue); }
+.learn-fig .blue-fill { fill: var(--haz-blue); }
+.learn-fig text { fill: var(--text); }
+.learn-fig .lbl { font-size: 11px; fill: var(--mist); }
+
+/* video library */
+.video-slot { margin: -4px -4px 10px; }
+.video-thumb {
+  position: relative; display: block; width: 100%; aspect-ratio: 16 / 9;
+  border: 0; border-radius: 10px; overflow: hidden; cursor: pointer;
+  background: #0a1826; padding: 0;
+}
+.video-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.video-play {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: #fff; background: rgba(10, 24, 38, 0.25);
+}
+.video-play .icon { width: 52px; height: 52px; filter: drop-shadow(0 2px 8px rgba(0,0,0,0.5)); }
+.video-frame { width: 100%; aspect-ratio: 16 / 9; border: 0; border-radius: 10px; display: block; }
+.video-title { font-size: 16px; }
+.video-actions { margin-top: 10px; gap: 8px; }
+
+/* practice quiz */
+.quiz-q { font-weight: 600; font-size: 15px; margin-bottom: var(--space-2); }
+.quiz-opt {
+  display: block; width: 100%; text-align: left;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 10px 12px; margin-bottom: 8px;
+  font-family: inherit; font-size: 14.5px; color: var(--text);
+  cursor: pointer; min-height: 44px;
+}
+.quiz-opt:disabled { cursor: default; opacity: 0.75; }
+.quiz-opt.right { border-color: var(--dgr-low); background: rgba(82, 164, 39, 0.12); opacity: 1; font-weight: 600; }
+.quiz-opt.wrong { border-color: var(--dgr-high); background: rgba(237, 28, 36, 0.08); }
+.quiz-why {
+  font-size: 13.5px; color: var(--mist);
+  border-top: 1px solid var(--line); padding-top: 8px; margin-top: 4px;
+}
 .back-btn {
   display: inline-flex; align-items: center; gap: 4px;
   background: none; border: 0; color: var(--accent);

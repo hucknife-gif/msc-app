@@ -14,8 +14,18 @@ const Store = (() => {
     custom: 'msc.custom',
     override: 'msc.override.', // + regionId
     obs: 'msc.fieldObs',
-    users: 'msc.users' // admin-created accounts (hashed, never plaintext)
+    users: 'msc.users', // admin-created accounts (hashed, never plaintext)
+    videos: 'msc.videos' // admin-added YouTube videos
   };
+
+  // Accepts a raw 11-char YouTube ID or any common URL form
+  // (watch?v=, youtu.be/, /shorts/, /embed/, /live/). Returns the ID or null.
+  function parseYouTubeId(input) {
+    const s = String(input).trim();
+    if (/^[A-Za-z0-9_-]{11}$/.test(s)) return s;
+    const m = s.match(/(?:youtu\.be\/|[?&]v=|\/(?:shorts|embed|live)\/)([A-Za-z0-9_-]{11})(?:[?&#]|$)/);
+    return m ? m[1] : null;
+  }
 
   // seeded demo accounts (documented on the Account screen).
   // PINs stored as SHA-256("msc:<user>:<pin>") — no plaintext credentials
@@ -64,6 +74,22 @@ const Store = (() => {
       if (s && s.user === uname) this.logout();
     },
 
+    // ---- video library (seeded MSC channel + admin-added) ----
+    customVideos() { return read(K.videos, []); },
+    allVideos() { return [...SEED_VIDEOS.map((v) => ({ ...v, seeded: true })), ...this.customVideos()]; },
+    addVideo({ url, title, note }) {
+      const id = parseYouTubeId(url);
+      if (!id) return { error: 'Paste a YouTube link or 11-character video ID.' };
+      if (this.allVideos().some((v) => v.id === id)) return { error: 'That video is already in the library.' };
+      const t = String(title || '').trim().slice(0, 90);
+      if (!t) return { error: 'Give the video a title.' };
+      const list = this.customVideos();
+      list.push({ id, title: t, note: String(note || '').trim().slice(0, 140), added: Date.now() });
+      write(K.videos, list);
+      return { ok: true };
+    },
+    removeVideo(id) { write(K.videos, this.customVideos().filter((v) => v.id !== id)); },
+
     // ---- migration (to a future hosted backend) ----
     // Exports salted SHA-256 credential records — never plaintext (plaintext
     // is never stored, so "transferring passwords" means transferring hashes;
@@ -76,6 +102,7 @@ const Store = (() => {
         exported: new Date().toISOString(),
         hashScheme: 'sha256(msc:<user>:<pin>)',
         users: this.customUsers(),
+        videos: this.customVideos(),
         observations: this.observations(),
         overrides: Object.fromEntries(
           ['main-range', 'dividing-range'].map((r) => [r, this.override(r)]).filter(([, v]) => v)
@@ -93,6 +120,10 @@ const Store = (() => {
         ['member', 'observer', 'forecaster'].includes(u.role)
       ).map((u) => ({ user: u.user, name: String(u.name || u.user).slice(0, 60), role: u.role, hash: u.hash, created: u.created || Date.now() }));
       write(K.users, clean);
+      const cleanVids = (Array.isArray(bundle.videos) ? bundle.videos : []).filter((v) =>
+        typeof v?.id === 'string' && /^[A-Za-z0-9_-]{11}$/.test(v.id) && typeof v?.title === 'string'
+      ).map((v) => ({ id: v.id, title: String(v.title).slice(0, 90), note: String(v.note || '').slice(0, 140), added: v.added || Date.now() }));
+      if (cleanVids.length) write(K.videos, cleanVids);
       if (Array.isArray(bundle.observations)) write(K.obs, bundle.observations.slice(0, 200));
       return { ok: true, users: clean.length };
     },

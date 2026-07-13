@@ -27,8 +27,14 @@ roadmap.
   tabs, Alpine + Subalpine elevation bands, travel & terrain advice.
 - **Observe** — link to MSC's official observation form + a local draft
   form (autosaves to the phone, shares via the iOS share sheet).
-- **Learn** — day-score explainer, ten backcountry essentials, avalanche
-  problems, Avalanche Training Centres, trip-plan checklist, guides.
+- **Learn** — a full curriculum built on current CAA/Avalanche Canada
+  doctrine adapted to Australian risks: the nine avalanche problems, terrain
+  reading (angle / traps / ATES v2), wind + cornices, decision-making
+  (daily process, FACETS human factors), the 10-minute companion-rescue
+  doctrine, and a century of Australian case studies — with inline SVG
+  diagrams (offline-safe) and tap-to-answer practice quizzes per article.
+  Plus the MSC YouTube video library: seeded from their verified channel,
+  embedded in-app via youtube-nocookie, forecasters can add/remove videos.
 - **Safety** — call-000 card, rescue-call script, companion-rescue steps,
   trip intention forms (NSW/VIC), MSC links.
 
