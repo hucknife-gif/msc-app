@@ -25,7 +25,8 @@ const ICONS = {
   external: '<path d="M14 4h6v6"/><path d="M20 4 10 14"/><path d="M19 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6"/>',
   send:     '<path d="m21 3-8 18-3-8-8-3Z"/><path d="M21 3 10 13"/>',
   clock:    '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/>',
-  play:     '<circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l6-3.5Z"/>'
+  play:     '<circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l6-3.5Z"/>',
+  route:    '<circle cx="5" cy="19" r="2"/><circle cx="19" cy="5" r="2"/><path d="M6.5 17.5C11 13 7.5 9.5 12 7.5c2.6-1.2 4 .8 5.5-1"/>'
 };
 const icon = (name, cls = 'icon') =>
   `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
@@ -1060,11 +1061,566 @@ function viewSafety() {
     </div>`;
 }
 
+// ============================================================
+// TOURS — GPS tracking, trip log, and on-device sharing feed.
+// Tracks live via the Geolocation API (screen kept awake where
+// supported), draws on OpenTopoMap tiles through vendored
+// Leaflet, and stores tracks/photos in IndexedDB via Store.
+// The "forum" is the same on-device multi-account model as the
+// rest of the app — a hosted backend swaps in behind Store.
+// ============================================================
+
+const haversine = (a, b) => {
+  const R = 6371000, rad = Math.PI / 180;
+  const dLat = (b[0] - a[0]) * rad, dLng = (b[1] - a[1]) * rad;
+  const s = Math.sin(dLat / 2) ** 2 +
+    Math.cos(a[0] * rad) * Math.cos(b[0] * rad) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(s));
+};
+
+const fmtDist = (m) => m >= 1000 ? (m / 1000).toFixed(2) + ' km' : Math.round(m) + ' m';
+const fmtDur = (s) => {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
+  return (h ? h + ':' + String(m).padStart(2, '0') : String(m)) + ':' + String(sec).padStart(2, '0');
+};
+
+// map helper: topo base layer with attribution (CC-BY-SA / © OSM contributors)
+function topoMap(el, opts = {}) {
+  const map = L.map(el, { zoomControl: true, attributionControl: true, ...opts });
+  L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+    maxZoom: 16,
+    attribution: '© OpenStreetMap contributors, SRTM · © OpenTopoMap (CC-BY-SA)'
+  }).addTo(map);
+  return map;
+}
+
+// route polyline split into climb (accent) and descent (blue) segments
+function drawRoute(map, points) {
+  const segs = { up: [], down: [] };
+  for (let i = 1; i < points.length; i++) {
+    const d = (points[i][3] ?? 0) - (points[i - 1][3] ?? 0);
+    segs[d >= 0 ? 'up' : 'down'].push([
+      [points[i - 1][1], points[i - 1][2]],
+      [points[i][1], points[i][2]]
+    ]);
+  }
+  const up = L.polyline(segs.up.flat().length ? segs.up : [], { color: '#f15a24', weight: 4 }).addTo(map);
+  const down = L.polyline(segs.down.flat().length ? segs.down : [], { color: '#29abe2', weight: 4 }).addTo(map);
+  // draw as multi-segment lines
+  up.setLatLngs(segs.up); down.setLatLngs(segs.down);
+  if (points.length) {
+    const latlngs = points.map((p) => [p[1], p[2]]);
+    map.fitBounds(L.latLngBounds(latlngs), { padding: [24, 24] });
+  }
+}
+
+// ---------- live tracker engine ----------
+const tracker = {
+  status: 'idle', // idle | recording | paused
+  watchId: null, timerId: null, wakeLock: null,
+  startedAt: 0, pausedAccum: 0, pauseStarted: 0,
+  points: [], obs: [], segsUp: [], segsDown: [],
+  dist: 0, gain: 0, loss: 0, altBuffer: 0, maxAlt: -Infinity,
+  map: null, lineUp: null, lineDown: null, marker: null,
+
+  async start() {
+    this.reset();
+    this.status = 'recording';
+    this.startedAt = Date.now();
+    this.watchId = navigator.geolocation.watchPosition(
+      (pos) => this.onFix(pos),
+      () => { const el = $('#tt-gps'); if (el) el.textContent = 'GPS: no signal — check location permission'; },
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 20000 }
+    );
+    this.timerId = setInterval(() => this.tickClock(), 1000);
+    try { this.wakeLock = await navigator.wakeLock?.request('screen'); } catch { /* unsupported */ }
+    document.addEventListener('visibilitychange', tracker.rewake);
+  },
+  rewake() {
+    if (document.visibilityState === 'visible' && tracker.status === 'recording') {
+      navigator.wakeLock?.request('screen').then((w) => { tracker.wakeLock = w; }).catch(() => {});
+    }
+  },
+  pause() {
+    if (this.status !== 'recording') return;
+    this.status = 'paused';
+    this.pauseStarted = Date.now();
+  },
+  resume() {
+    if (this.status !== 'paused') return;
+    this.pausedAccum += Date.now() - this.pauseStarted;
+    this.status = 'recording';
+  },
+  elapsedSec() {
+    if (!this.startedAt) return 0;
+    const pausedNow = this.status === 'paused' ? Date.now() - this.pauseStarted : 0;
+    return Math.max(0, (Date.now() - this.startedAt - this.pausedAccum - pausedNow) / 1000);
+  },
+  onFix(pos) {
+    if (this.status !== 'recording') return;
+    const { latitude, longitude, altitude, accuracy } = pos.coords;
+    if (accuracy > 60) return; // junk fix
+    const t = Math.round((Date.now() - this.startedAt) / 1000);
+    const p = [t, +latitude.toFixed(6), +longitude.toFixed(6), altitude == null ? null : Math.round(altitude)];
+    const last = this.points[this.points.length - 1];
+    if (last) {
+      const d = haversine([last[1], last[2]], [p[1], p[2]]);
+      if (d < 4 && t - last[0] < 10) return; // stationary jitter
+      this.dist += d;
+      // elevation with 3 m hysteresis so GPS noise doesn't count as climbing
+      if (p[3] != null && last[3] != null) {
+        this.altBuffer += p[3] - last[3];
+        if (this.altBuffer >= 3) { this.gain += this.altBuffer; this.altBuffer = 0; }
+        else if (this.altBuffer <= -3) { this.loss -= this.altBuffer; this.altBuffer = 0; }
+      }
+    }
+    if (p[3] != null && p[3] > this.maxAlt) this.maxAlt = p[3];
+    this.points.push(p);
+    this.paint(p);
+  },
+  paint(p) {
+    const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+    set('#tt-dist', fmtDist(this.dist));
+    set('#tt-gain', Math.round(this.gain) + ' m');
+    set('#tt-loss', Math.round(this.loss) + ' m');
+    set('#tt-alt', p[3] != null ? p[3] + ' m' : '—');
+    set('#tt-gps', 'GPS: locked · ±' + this.points.length + ' pts');
+    if (this.map) {
+      const ll = [p[1], p[2]];
+      const last = this.points[this.points.length - 2];
+      if (last) {
+        const up = (p[3] ?? 0) >= (last[3] ?? 0);
+        const segs = up ? this.segsUp : this.segsDown;
+        segs.push([[last[1], last[2]], ll]);
+        const line = up ? this.lineUp : this.lineDown;
+        if (line) line.setLatLngs(segs);
+      }
+      if (!this.marker) this.marker = L.circleMarker(ll, { radius: 7, color: '#ffffff', weight: 2, fillColor: '#ed1c24', fillOpacity: 1 }).addTo(this.map);
+      else this.marker.setLatLng(ll);
+      this.map.setView(ll, Math.max(this.map.getZoom(), 14));
+    }
+  },
+  tickClock() {
+    const el = $('#tt-time');
+    if (el) el.textContent = fmtDur(this.elapsedSec());
+  },
+  addObs(text) {
+    const body = String(text || '').trim().slice(0, 300);
+    if (!body) return false;
+    const last = this.points[this.points.length - 1];
+    this.obs.push({ at: Date.now(), t: Math.round((Date.now() - this.startedAt) / 1000),
+      lat: last?.[1] ?? null, lng: last?.[2] ?? null, alt: last?.[3] ?? null, text: body });
+    return true;
+  },
+  async finish() {
+    const s = Store.session();
+    const durSec = Math.round(this.elapsedSec());
+    const trip = {
+      id: 'trip-' + this.startedAt,
+      owner: s.user, ownerName: s.name,
+      title: 'Tour ' + new Date(this.startedAt).toLocaleDateString('en-AU'),
+      desc: '',
+      started: this.startedAt, ended: Date.now(),
+      points: this.points,
+      stats: { dist: Math.round(this.dist), gain: Math.round(this.gain),
+               loss: Math.round(this.loss), maxAlt: this.maxAlt === -Infinity ? null : this.maxAlt, durSec },
+      photos: [], videoLinks: [], obs: this.obs,
+      shared: false, likes: [], comments: []
+    };
+    await Store.saveTrip(trip);
+    this.stop();
+    tours.list = null; tours.trip = null;
+    location.hash = '#/tours/' + trip.id;
+    return trip.id;
+  },
+  stop() {
+    if (this.watchId != null) navigator.geolocation.clearWatch(this.watchId);
+    if (this.timerId) clearInterval(this.timerId);
+    this.wakeLock?.release?.().catch?.(() => {});
+    document.removeEventListener('visibilitychange', tracker.rewake);
+    this.status = 'idle';
+    this.map = null; this.lineUp = null; this.lineDown = null; this.marker = null;
+  },
+  reset() {
+    this.stop();
+    this.points = []; this.obs = []; this.segsUp = []; this.segsDown = [];
+    this.dist = 0; this.gain = 0; this.loss = 0; this.altBuffer = 0; this.maxAlt = -Infinity;
+    this.startedAt = 0; this.pausedAccum = 0; this.pauseStarted = 0;
+  }
+};
+
+// ---------- elevation profile (distance vs altitude, up/down coloured) ----------
+function elevProfile(points) {
+  const pts = points.filter((p) => p[3] != null);
+  if (pts.length < 2) return '<p class="sub">No elevation data recorded.</p>';
+  let cum = 0;
+  const xs = [0];
+  for (let i = 1; i < pts.length; i++) {
+    cum += haversine([pts[i - 1][1], pts[i - 1][2]], [pts[i][1], pts[i][2]]);
+    xs.push(cum);
+  }
+  const alts = pts.map((p) => p[3]);
+  const minA = Math.min(...alts), maxA = Math.max(...alts);
+  const W = 340, H = 130, PX = 10, PY = 12;
+  const sx = (d) => PX + (d / (cum || 1)) * (W - 2 * PX);
+  const sy = (a) => H - PY - ((a - minA) / ((maxA - minA) || 1)) * (H - 2 * PY);
+  let segsUp = '', segsDown = '';
+  for (let i = 1; i < pts.length; i++) {
+    const seg = `M${sx(xs[i - 1]).toFixed(1)} ${sy(alts[i - 1]).toFixed(1)} L${sx(xs[i]).toFixed(1)} ${sy(alts[i]).toFixed(1)}`;
+    if (alts[i] >= alts[i - 1]) segsUp += seg; else segsDown += seg;
+  }
+  return `<svg class="elev-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Elevation profile">
+    <path d="${segsUp}" fill="none" stroke="#f15a24" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="${segsDown}" fill="none" stroke="#29abe2" stroke-width="2.5" stroke-linecap="round"/>
+    <text x="${PX}" y="11" class="elev-lbl">${maxA} m</text>
+    <text x="${PX}" y="${H - 2}" class="elev-lbl">${minA} m</text>
+    <text x="${W - PX}" y="${H - 2}" class="elev-lbl" text-anchor="end">${fmtDist(cum)}</text>
+  </svg>`;
+}
+
+// ---------- tours state + views ----------
+const tours = { list: null, trip: null, photoUrls: {}, loadingList: false, loadingTrip: null };
+
+async function loadTours() {
+  if (tours.loadingList) return;
+  tours.loadingList = true;
+  tours.list = await Store.allTrips();
+  tours.loadingList = false;
+  render();
+}
+
+async function loadTrip(id) {
+  if (tours.loadingTrip === id) return;
+  tours.loadingTrip = id;
+  const t = await Store.getTrip(id);
+  if (t) {
+    for (const mid of t.photos || []) {
+      if (!tours.photoUrls[mid]) {
+        const blob = await Store.getPhoto(mid);
+        if (blob) tours.photoUrls[mid] = URL.createObjectURL(blob);
+      }
+    }
+  }
+  tours.trip = t || { missing: true, id };
+  tours.loadingTrip = null;
+  render();
+}
+
+const FEED_TABS = [
+  { id: 'general', label: 'General' },
+  { id: 'favs', label: 'Favourites' },
+  { id: 'mine', label: 'My tours' }
+];
+function feedTab() { return sessionStorage.getItem('msc.feedTab') || 'general'; }
+
+function tripCard(t, me) {
+  const liked = me && (t.likes || []).includes(me);
+  const fav = Store.favProfiles().includes(t.owner);
+  return `
+  <a class="card tappable trip-card" href="#/tours/${esc(t.id)}"><div class="row">
+    <div class="grow">
+      <h3>${esc(t.title)}</h3>
+      <div class="sub">${esc(t.ownerName)} · ${esc(new Date(t.started).toLocaleDateString('en-AU'))}
+        ${t.shared ? '' : ' · <strong>private</strong>'}${fav ? ' · ★' : ''}</div>
+      <div class="trip-stats">
+        <span>${fmtDist(t.stats.dist)}</span><span>↑ ${t.stats.gain} m</span>
+        <span>↓ ${t.stats.loss} m</span><span>${fmtDur(t.stats.durSec)}</span>
+      </div>
+      <div class="sub">▲ ${(t.likes || []).length} ${liked ? '· liked' : ''} · ${(t.comments || []).length} comments${(t.photos || []).length ? ' · ' + t.photos.length + ' photos' : ''}</div>
+    </div>
+    ${icon('chevR', 'icon chev')}</div></a>`;
+}
+
+function viewTours(seg2) {
+  if (seg2 === 'track') return viewTourTrack();
+  if (seg2) return viewTourDetail(seg2);
+
+  if (!tours.list) { loadTours(); return '<h1>Tours</h1><div class="card"><p class="sub">Loading tours…</p></div>'; }
+  const s = Store.session();
+  const me = s?.user;
+  const tab = feedTab();
+  const favs = Store.favProfiles();
+  let feed = tours.list.filter((t) =>
+    tab === 'mine' ? t.owner === me :
+    tab === 'favs' ? t.shared && favs.includes(t.owner) :
+    (t.shared || t.owner === me));
+  return `
+    <h1>Tours<span class="h1-sub">Track, log and share your days out</span></h1>
+    ${tracker.status !== 'idle' ? `
+    <a class="card tappable rec-banner" href="#/tours/track"><div class="row">
+      <span class="badge live"><span class="dot"></span>Recording</span>
+      <div class="grow" style="margin-left:10px"><h3>Tour in progress</h3><div class="sub">Tap to return to the tracking screen</div></div>
+      ${icon('chevR', 'icon chev')}</div></a>` : `
+    ${s ? `<a class="btn" href="#/tours/track" id="start-tour">${icon('route', 'icon')} Start a tour</a>`
+        : `<div class="card"><h3>Sign in to record</h3><p class="sub" style="margin-top:6px">Tracking, trip logs and the feed use your account. Any tier works.</p><a class="btn" href="#/account">Sign in</a></div>`}`}
+
+    ${rule('Feed')}
+    <div class="seg-row">${FEED_TABS.map((f) => `<button class="seg ${feedTab() === f.id ? 'on' : ''}" data-feed="${f.id}">${f.label}</button>`).join('')}</div>
+    ${feed.length ? feed.map((t) => tripCard(t, me)).join('')
+      : `<div class="card"><p class="sub">${tab === 'mine' ? 'No tours yet — hit Start a tour.' : tab === 'favs' ? 'No shared tours from favourited profiles yet. Star people from their trip pages.' : 'Nothing shared yet. Recorded tours appear here when their owners share them.'}</p></div>`}
+    <p class="note">Tours live on this device (and in migration bundles). Map data © OpenStreetMap contributors / OpenTopoMap.</p>`;
+}
+
+function viewTourTrack() {
+  if (!Store.session()) {
+    return `<h1>Track a tour</h1><div class="card"><h3>Sign in first</h3>
+      <p class="sub" style="margin-top:6px">Tours are saved to your account on this device.</p></div>
+      <a class="btn" href="#/account">Sign in</a>`;
+  }
+  const rec = tracker.status;
+  return `
+    <button class="back-btn" data-nav="#/tours">${icon('chevL', 'icon')} Tours</button>
+    <h1>Live tracking</h1>
+    <div id="tour-map" class="tour-map"></div>
+    <p class="sub" id="tt-gps" style="margin:6px 2px">${rec === 'idle' ? 'GPS starts when you hit Record.' : 'GPS: waiting for first fix…'}</p>
+    <div class="kv track-kv">
+      <div class="cell"><div class="k">Time</div><div class="v big-stat" id="tt-time">0:00</div></div>
+      <div class="cell"><div class="k">Distance</div><div class="v big-stat" id="tt-dist">0 m</div></div>
+      <div class="cell"><div class="k">Ascent ↑</div><div class="v big-stat up" id="tt-gain">0 m</div></div>
+      <div class="cell"><div class="k">Descent ↓</div><div class="v big-stat down" id="tt-loss">0 m</div></div>
+      <div class="cell"><div class="k">Altitude</div><div class="v big-stat" id="tt-alt">—</div></div>
+      <div class="cell"><div class="k">Observations</div><div class="v big-stat" id="tt-obs">${tracker.obs.length}</div></div>
+    </div>
+    <div class="track-controls">
+      ${rec === 'idle' ? `<button class="btn" id="tt-start">● Record</button>` : ''}
+      ${rec === 'recording' ? `<button class="btn secondary" id="tt-pause">❚❚ Pause</button>` : ''}
+      ${rec === 'paused' ? `<button class="btn" id="tt-resume">● Resume</button>` : ''}
+      ${rec !== 'idle' ? `<button class="btn" id="tt-finish">■ Finish & save</button>` : ''}
+    </div>
+    ${rec !== 'idle' ? `
+    <form id="tt-obs-form" class="card">
+      <h3>Log an observation here</h3>
+      <p class="sub" style="margin-top:4px">Pinned to your current position and time. Wind effect, whumpfs, surface change, wildlife…</p>
+      <textarea id="tt-obs-text" rows="2" maxlength="300" placeholder="e.g. Fresh wind slab forming on SE rolls near the saddle"></textarea>
+      <button class="btn secondary" type="submit">Pin observation</button>
+    </form>` : ''}
+    <p class="note">Keep the app open while recording — iOS pauses GPS for backgrounded web apps. The screen is kept awake where the phone allows it.</p>`;
+}
+
+function tourObsList(obsArr) {
+  if (!obsArr?.length) return '';
+  return `${rule('Observations on route', `${obsArr.length}`)}
+    ${obsArr.map((o) => `<div class="card"><p style="font-size:14.5px">${esc(o.text)}</p>
+      <div class="sub">${esc(fmtDur(o.t || 0))} in${o.alt != null ? ` · ${esc(String(o.alt))} m` : ''}${o.lat != null ? ` · ${esc(o.lat.toFixed(4))}, ${esc(o.lng.toFixed(4))}` : ''}</div></div>`).join('')}`;
+}
+
+function viewTourDetail(id) {
+  if (!tours.trip || tours.trip.id !== id) { loadTrip(id); return '<div class="card"><p class="sub">Loading tour…</p></div>'; }
+  const t = tours.trip;
+  if (t.missing) return `<button class="back-btn" data-nav="#/tours">${icon('chevL', 'icon')} Tours</button><div class="card"><p class="sub">That tour isn’t on this device.</p></div>`;
+  const s = Store.session();
+  const me = s?.user;
+  const own = me === t.owner;
+  const liked = me && (t.likes || []).includes(me);
+  const fav = Store.favProfiles().includes(t.owner);
+  return `
+    <button class="back-btn" data-nav="#/tours">${icon('chevL', 'icon')} Tours</button>
+    <h1>${esc(t.title)}</h1>
+    <p class="sub" style="margin-bottom:10px">${esc(t.ownerName)} · ${esc(new Date(t.started).toLocaleString('en-AU', { hour12: false }))}
+      ${own ? '' : `· <button class="mini-btn" id="fav-owner">${fav ? '★ Favourited' : '☆ Favourite profile'}</button>`}</p>
+    <div id="trip-map" class="tour-map"></div>
+    <div class="kv track-kv" style="margin-top:10px">
+      <div class="cell"><div class="k">Distance</div><div class="v">${fmtDist(t.stats.dist)}</div></div>
+      <div class="cell"><div class="k">Time</div><div class="v">${fmtDur(t.stats.durSec)}</div></div>
+      <div class="cell"><div class="k">Ascent ↑</div><div class="v up">${esc(String(t.stats.gain))} m</div></div>
+      <div class="cell"><div class="k">Descent ↓</div><div class="v down">${esc(String(t.stats.loss))} m</div></div>
+    </div>
+    ${rule('Elevation', t.stats.maxAlt ? `Max ${t.stats.maxAlt} m` : '')}
+    <div class="card">${elevProfile(t.points)}
+      <p class="sub" style="margin-top:6px"><span class="up">━</span> climbing · <span class="down">━</span> descending</p></div>
+
+    ${t.desc || own ? rule('About this tour') : ''}
+    ${own ? `
+    <form id="trip-edit" class="card">
+      <label for="te-title">Title</label>
+      <input id="te-title" name="title" maxlength="80" value="${esc(t.title)}">
+      <label for="te-desc">Description</label>
+      <textarea id="te-desc" name="desc" rows="3" maxlength="1000" placeholder="Route, conditions, how it went…">${esc(t.desc)}</textarea>
+      <button class="btn secondary" type="submit">Save details</button>
+    </form>` : (t.desc ? `<div class="card article"><p>${esc(t.desc)}</p></div>` : '')}
+
+    ${(t.photos || []).length || own ? rule('Photos', `${(t.photos || []).length}`) : ''}
+    ${(t.photos || []).length ? `<div class="photo-grid">${t.photos.map((m) =>
+      tours.photoUrls[m] ? `<img src="${esc(tours.photoUrls[m])}" alt="Tour photo" loading="lazy">` : '').join('')}</div>` : ''}
+    ${own ? `<div class="card"><label for="trip-photo">Add photos</label>
+      <input id="trip-photo" type="file" accept="image/*" multiple>
+      <p class="sub" style="margin-top:6px">Stored on-device, compressed. Videos: paste a link below (YouTube or anywhere) — raw video files would fill the phone.</p>
+      <label for="trip-video">Add a video link</label>
+      <input id="trip-video" inputmode="url" placeholder="https://…">
+      <button class="mini-btn" id="trip-video-add" type="button">Add link</button></div>` : ''}
+    ${(t.videoLinks || []).length ? `<div class="card">${t.videoLinks.map((v, i) =>
+      `<div class="row" style="padding:4px 0"><a class="grow" target="_blank" rel="noopener" href="${esc(v.url)}">${icon('play', 'icon accent')} ${esc(v.label || v.url)}</a>
+       ${own ? `<button class="mini-btn danger" data-del-vlink="${i}">Remove</button>` : ''}</div>`).join('')}</div>` : ''}
+
+    ${tourObsList(t.obs)}
+    ${own ? `<form id="trip-obs-form" class="card"><h3>Add an observation (after the fact)</h3>
+      <textarea id="trip-obs-text" rows="2" maxlength="300" placeholder="What you saw out there"></textarea>
+      <button class="btn secondary" type="submit">Add observation</button></form>` : ''}
+
+    ${rule('Sharing & feed')}
+    <div class="card">
+      <div class="row">
+        <button class="mini-btn ${liked ? 'on' : ''}" id="trip-like" ${me ? '' : 'disabled'}>▲ ${(t.likes || []).length}</button>
+        <div class="grow" style="margin-left:10px">
+        ${own ? `<button class="mini-btn" id="trip-share">${t.shared ? 'Shared to feed — make private' : 'Private — share to feed'}</button>` : `<span class="sub">${t.shared ? 'Shared to the feed' : 'Private tour'}</span>`}
+        </div>
+        ${own ? `<button class="mini-btn danger" id="trip-delete">Delete tour</button>` : ''}
+      </div>
+    </div>
+    ${rule('Comments', `${(t.comments || []).length}`)}
+    ${(t.comments || []).map((c) => `<div class="card"><p style="font-size:14.5px">${esc(c.text)}</p>
+      <div class="sub">${esc(c.name)} · ${esc(new Date(c.at).toLocaleString('en-AU', { hour12: false }))}</div></div>`).join('')}
+    ${me ? `<form id="trip-comment-form" class="card">
+      <textarea id="trip-comment-text" rows="2" maxlength="500" placeholder="Leave a comment"></textarea>
+      <button class="btn secondary" type="submit">Comment</button></form>`
+      : `<div class="card"><p class="sub">Sign in to like or comment.</p></div>`}`;
+}
+
+// image intake: downscale to ≤1400 px JPEG so a season of photos fits on-device
+async function compressImage(file) {
+  const bmp = await createImageBitmap(file);
+  const scale = Math.min(1, 1400 / Math.max(bmp.width, bmp.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(bmp.width * scale);
+  canvas.height = Math.round(bmp.height * scale);
+  canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  return new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.82));
+}
+
+function bindTours() {
+  // feed tabs
+  document.querySelectorAll('[data-feed]').forEach((b) =>
+    b.addEventListener('click', () => { sessionStorage.setItem('msc.feedTab', b.dataset.feed); render(); }));
+
+  // live tracking screen
+  const mapEl = document.getElementById('tour-map');
+  if (mapEl) {
+    const map = topoMap(mapEl, { center: [-36.45, 148.26], zoom: 12 }); // Main Range default
+    if (tracker.status !== 'idle') {
+      tracker.map = map;
+      tracker.lineUp = L.polyline(tracker.segsUp, { color: '#f15a24', weight: 4 }).addTo(map);
+      tracker.lineDown = L.polyline(tracker.segsDown, { color: '#29abe2', weight: 4 }).addTo(map);
+      const lastP = tracker.points[tracker.points.length - 1];
+      if (lastP) {
+        tracker.marker = null;
+        tracker.paint(lastP);
+      }
+    } else {
+      // idle: centre on the phone if it allows us
+      navigator.geolocation?.getCurrentPosition?.((pos) =>
+        map.setView([pos.coords.latitude, pos.coords.longitude], 13), () => {}, { timeout: 5000 });
+      window.__mscTrackMap = map; // adopted by tracker on Record
+    }
+    const start = $('#tt-start');
+    if (start) start.addEventListener('click', async () => {
+      await tracker.start();
+      render(); // bindTours reattaches the map + lines on the re-render
+    });
+    const pause = $('#tt-pause');
+    if (pause) pause.addEventListener('click', () => { tracker.pause(); render(); });
+    const resume = $('#tt-resume');
+    if (resume) resume.addEventListener('click', () => { tracker.resume(); render(); });
+    const finish = $('#tt-finish');
+    if (finish) finish.addEventListener('click', async () => {
+      if (tracker.points.length < 2 && !confirm('Almost no GPS points recorded — save anyway?')) return;
+      await tracker.finish();
+    });
+    const obsForm = $('#tt-obs-form');
+    if (obsForm) obsForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (tracker.addObs($('#tt-obs-text').value)) {
+        $('#tt-obs-text').value = '';
+        const c = $('#tt-obs');
+        if (c) c.textContent = tracker.obs.length;
+      }
+    });
+  }
+
+  // trip detail screen
+  const tripMapEl = document.getElementById('trip-map');
+  if (tripMapEl && tours.trip?.points) {
+    const map = topoMap(tripMapEl);
+    drawRoute(map, tours.trip.points);
+  }
+  const saveTrip = async () => { await Store.saveTrip(tours.trip); render(); };
+  const te = $('#trip-edit');
+  if (te) te.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    tours.trip.title = $('#te-title').value.trim().slice(0, 80) || tours.trip.title;
+    tours.trip.desc = $('#te-desc').value.trim().slice(0, 1000);
+    tours.list = null;
+    await saveTrip();
+  });
+  const like = $('#trip-like');
+  if (like) like.addEventListener('click', async () => {
+    await Store.toggleLike(tours.trip.id);
+    tours.trip = null; tours.list = null;
+    render();
+  });
+  const share = $('#trip-share');
+  if (share) share.addEventListener('click', async () => {
+    tours.trip.shared = !tours.trip.shared;
+    tours.list = null;
+    await saveTrip();
+  });
+  const del = $('#trip-delete');
+  if (del) del.addEventListener('click', async () => {
+    if (!confirm('Delete this tour and its photos? This can’t be undone.')) return;
+    await Store.deleteTrip(tours.trip.id);
+    tours.trip = null; tours.list = null;
+    location.hash = '#/tours';
+  });
+  const favBtn = $('#fav-owner');
+  if (favBtn) favBtn.addEventListener('click', () => { Store.toggleFav(tours.trip.owner); render(); });
+  const photo = $('#trip-photo');
+  if (photo) photo.addEventListener('change', async () => {
+    for (const f of photo.files || []) {
+      if (!f.type.startsWith('image/')) continue;
+      const blob = await compressImage(f);
+      const id = 'ph-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+      await Store.savePhoto(id, blob);
+      tours.trip.photos.push(id);
+      tours.photoUrls[id] = URL.createObjectURL(blob);
+    }
+    await saveTrip();
+  });
+  const vAdd = $('#trip-video-add');
+  if (vAdd) vAdd.addEventListener('click', async () => {
+    const url = $('#trip-video').value.trim();
+    if (!/^https:\/\/\S+$/.test(url) || url.length > 300) return;
+    tours.trip.videoLinks = tours.trip.videoLinks || [];
+    tours.trip.videoLinks.push({ url, label: url.replace(/^https:\/\/(www\.)?/, '').slice(0, 60) });
+    await saveTrip();
+  });
+  document.querySelectorAll('[data-del-vlink]').forEach((b) =>
+    b.addEventListener('click', async () => {
+      tours.trip.videoLinks.splice(+b.dataset.delVlink, 1);
+      await saveTrip();
+    }));
+  const obsF = $('#trip-obs-form');
+  if (obsF) obsF.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const text = $('#trip-obs-text').value.trim().slice(0, 300);
+    if (!text) return;
+    tours.trip.obs = tours.trip.obs || [];
+    tours.trip.obs.push({ at: Date.now(), t: null, lat: null, lng: null, alt: null, text });
+    await saveTrip();
+  });
+  const cm = $('#trip-comment-form');
+  if (cm) cm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    await Store.addComment(tours.trip.id, $('#trip-comment-text').value);
+    tours.trip = null;
+    render();
+  });
+}
+
 // ---------- router ----------
 const TABS = [
   { path: '#/today',   label: 'Today',   icon: 'mountain',   render: viewToday },
   { path: '#/report',  label: 'Report',  icon: 'report',     render: viewReport },
   { path: '#/observe', label: 'Observe', icon: 'binoculars', render: viewObserve },
+  { path: '#/tours',   label: 'Tours',   icon: 'route',      render: viewTours },
   { path: '#/learn',   label: 'Learn',   icon: 'book',       render: viewLearn },
   { path: '#/safety',  label: 'Safety',  icon: 'cross',      render: viewSafety }
 ];
@@ -1113,6 +1669,8 @@ function bindView() {
       b.setAttribute('aria-expanded', String(open));
       b.textContent = open ? 'About –' : 'About +';
     }));
+
+  bindTours();
 
   // learn practice quizzes: first tap locks the question, shows the answer
   document.querySelectorAll('.quiz-opt').forEach((b) =>
@@ -1208,8 +1766,8 @@ function bindView() {
       if (confirm(`Remove account "${b.dataset.delUser}"?`)) { Store.removeUser(b.dataset.delUser); render(); }
     }));
   const ex = $('#export-btn');
-  if (ex) ex.addEventListener('click', () => {
-    const blob = new Blob([JSON.stringify(Store.exportBundle(), null, 2)], { type: 'application/json' });
+  if (ex) ex.addEventListener('click', async () => {
+    const blob = new Blob([JSON.stringify(await Store.exportBundle(), null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = 'msc-app-migration.json';
@@ -1221,7 +1779,7 @@ function bindView() {
     const f = imf.files?.[0];
     if (!f || f.size > 2_000_000) return;
     try {
-      const res = Store.importBundle(JSON.parse(await f.text()));
+      const res = await Store.importBundle(JSON.parse(await f.text()));
       const msg = $('#import-msg');
       msg.textContent = res.error || `Imported ${res.users} account(s).`;
       msg.removeAttribute('hidden');
