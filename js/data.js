@@ -55,8 +55,9 @@ const LEVEL_SEVERITY = {
   avalanche:  { Low: 0, Moderate: 1, Considerable: 2, High: 3 }
 };
 
+// apiRange = MSC API region id (empirical: 3 = Main range, 2 = Dividing Range)
 const REGIONS = [
-  { id: 'main-range',     apiRange: 1, name: 'NSW Main Range',     area: 'Kosciuszko National Park, NSW' },
+  { id: 'main-range',     apiRange: 3, name: 'NSW Main Range',     area: 'Kosciuszko National Park, NSW' },
   { id: 'dividing-range', apiRange: 2, name: 'VIC Dividing Range', area: 'Victorian Alps, VIC' }
 ];
 

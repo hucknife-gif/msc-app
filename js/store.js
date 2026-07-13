@@ -21,8 +21,12 @@ const Store = (() => {
   // in the bundle. A real backend replaces this with server-side auth.
   const USERS = [
     { user: 'forecaster', hash: '68160fb7dedc9d89408ddf5862993f43f0be6c25095359f83d265c26b15ee020', name: 'Duty Forecaster', role: 'forecaster' },
-    { user: 'observer',   hash: 'cfc27a835d6eb9ce1e7c90313ef203ae70aae9a2d918a3c3f6d81d98ce9b4d8c', name: 'Field Observer',  role: 'observer' }
+    { user: 'observer',   hash: 'cfc27a835d6eb9ce1e7c90313ef203ae70aae9a2d918a3c3f6d81d98ce9b4d8c', name: 'Field Observer',  role: 'observer' },
+    { user: 'member',     hash: 'c1f645a0d3b2ee94eb90635434a419d0b9eced09dcb348ed2d90972f771d55a4', name: 'MSC Member',      role: 'member' }
   ];
+
+  // access tiers: base (no login) < member < observer < forecaster
+  const ROLE_RANK = { guest: 0, member: 1, observer: 2, forecaster: 3 };
 
   const SESSION_TTL = 12 * 60 * 60 * 1000; // 12 h
 
@@ -55,6 +59,7 @@ const Store = (() => {
       return s;
     },
     role() { return this.session()?.role ?? 'guest'; },
+    hasRole(min) { return (ROLE_RANK[this.role()] ?? 0) >= (ROLE_RANK[min] ?? 99); },
 
     // ---- theme ----
     theme() { return localStorage.getItem(K.theme) || 'light'; },
