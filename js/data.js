@@ -80,8 +80,29 @@ const SAMPLE_REPORTS = {
       alpine:    { N: 1, NE: 2, E: 3, SE: 3, S: 2, SW: 1, W: 0, NW: 0 },
       subalpine: { N: 0, NE: 1, E: 1, SE: 1, S: 0, SW: 0, W: 0, NW: 0 }
     },
+    hazards: [
+      {
+        n: 1, tier: 'Primary', name: 'Wind slab avalanche', type: 'avalanche',
+        desc: 'Fresh slabs are building on lee features as the north-westerly ramps up. Reactivity is expected to rise through the afternoon as loading continues onto the overnight crust.',
+        about: 'Wind slab forms when wind-transported snow packs into a cohesive layer over a weaker surface. It is most reactive just below ridgelines, on convex rolls and in cross-loaded gullies.',
+        bands: ['alpine'], aspects: ['E', 'SE', 'S'], size: 2, likelihood: 'Likely'
+      },
+      {
+        n: 2, tier: 'Secondary', name: 'Icy sliding surfaces', type: 'surface',
+        desc: 'Refrozen surfaces on shaded aspects will not soften today. A simple slip can become a long slide into rocks — firm-snow tools and the skill to use them are the mitigation.',
+        about: 'Slide-for-life conditions occur when a fall on firm snow cannot be arrested. Consequence, not probability, is what changes: benign slopes become serious above cliffs, rocks or gullies.',
+        bands: ['alpine', 'subalpine'], aspects: ['S', 'SW', 'SE']
+      },
+      {
+        n: 3, tier: 'Tertiary', name: 'Whiteout navigation', type: 'visibility',
+        desc: 'Cloud drops onto the range from mid-afternoon ahead of the front. Featureless terrain above treeline will lose all definition quickly.',
+        about: 'In whiteout, the snow surface and sky merge; slope angle and drop-offs become unreadable. Navigation by bearing and altitude, rehearsed beforehand, is the reliable fallback.',
+        bands: ['alpine'], aspects: ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
+      }
+    ],
     bands: {
       alpine: {
+        score: 'extra-caution',
         dangers: { exposure: 'Severe', visibility: 'Poor', surface: 'Icy', avalanche: 'Moderate' },
         travel: [
           'Wind chill near -20°C on exposed ridgelines — cover all skin and keep moving or get below the ridge.',
@@ -91,6 +112,7 @@ const SAMPLE_REPORTS = {
         ]
       },
       subalpine: {
+        score: 'usual-caution',
         dangers: { exposure: 'Notable', visibility: 'Good', surface: 'Firm', avalanche: 'Low' },
         travel: [
           'Sheltered valley travel is the sensible plan for the afternoon.',
@@ -119,8 +141,23 @@ const SAMPLE_REPORTS = {
       alpine:    { N: 0, NE: 1, E: 2, SE: 1, S: 0, SW: 0, W: 0, NW: 0 },
       subalpine: { N: 0, NE: 0, E: 1, SE: 0, S: 0, SW: 0, W: 0, NW: 0 }
     },
+    hazards: [
+      {
+        n: 1, tier: 'Primary', name: 'Cornice fall', type: 'avalanche',
+        desc: 'Large cornices from last week’s storm overhang east-facing ridgelines. Daytime warming increases the chance of natural failures onto slopes below.',
+        about: 'Cornices break further back than they appear from above, and a collapse can trigger the slope beneath. Give edges several metres and avoid lingering below them in warming conditions.',
+        bands: ['alpine'], aspects: ['E', 'NE', 'SE'], size: 2, likelihood: 'Possible'
+      },
+      {
+        n: 2, tier: 'Secondary', name: 'Morning icy patches', type: 'surface',
+        desc: 'Refrozen patches persist on shaded track sections and above 1500 m until mid-morning. Consequence is low on gentle terrain but rises quickly on steeper sidles.',
+        about: 'Melt-freeze surfaces are most hazardous early in the day and on shaded aspects; softening usually arrives with sun and rising freezing levels.',
+        bands: ['alpine', 'subalpine'], aspects: ['S', 'SW', 'SE']
+      }
+    ],
     bands: {
       alpine: {
+        score: 'usual-caution',
         dangers: { exposure: 'Notable', visibility: 'Good', surface: 'Firm', avalanche: 'Low' },
         travel: [
           'Morning surfaces are firm — time descents for afternoon softening on sunny aspects.',
@@ -129,6 +166,7 @@ const SAMPLE_REPORTS = {
         ]
       },
       subalpine: {
+        score: 'usual-caution',
         dangers: { exposure: 'Mild', visibility: 'Good', surface: 'Soft', avalanche: 'Low' },
         travel: [
           'Good touring conditions on sheltered terrain.',
