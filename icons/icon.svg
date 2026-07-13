@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#16283c"/>
+      <stop offset="1" stop-color="#0d1a2b"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#sky)"/>
+  <!-- back peak -->
+  <path d="M96 372 L232 168 L300 268 L332 232 L432 372 Z" fill="#2e4a66"/>
+  <!-- front peak -->
+  <path d="M64 396 L200 210 L256 288 L312 224 L448 396 Z" fill="#3f637f"/>
+  <!-- snow caps -->
+  <path d="M200 210 L232 254 L214 250 L242 282 L256 288 L228 249 L246 252 Z" fill="#eef4f8" opacity="0"/>
+  <path d="M200 210 L236 259 L218 248 L248 290 L256 288 L226 246 L244 254 Z" fill="#eef4f8"/>
+  <path d="M312 224 L346 272 L328 262 L356 298 L370 284 L340 254 L352 258 Z" fill="#eef4f8"/>
+  <!-- warning beacon dot -->
+  <circle cx="256" cy="120" r="34" fill="#f79218"/>
+  <circle cx="256" cy="120" r="34" fill="none" stroke="#eef4f8" stroke-width="6" opacity="0.5"/>
+  <!-- baseline -->
+  <rect x="64" y="392" width="384" height="12" rx="6" fill="#eef4f8" opacity="0.85"/>
+</svg>
