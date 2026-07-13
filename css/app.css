@@ -512,6 +512,8 @@ input:focus, textarea:focus, select:focus, button:focus-visible, a:focus-visible
 }
 .mini-btn.danger { color: var(--dgr-high); border-color: var(--dgr-high); }
 .update-note { border-left: 3px solid var(--haz-blue); }
+.user-row { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.user-row:last-child { border-bottom: 0; }
 
 .btn {
   display: flex; align-items: center; justify-content: center; gap: var(--space-2);

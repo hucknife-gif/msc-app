@@ -711,7 +711,40 @@ function viewAccount() {
       </select>
       <button class="btn" type="submit">Save customisation</button>
     </form>
-    <button class="btn secondary" id="clear-override">Revert forecast to baseline</button>` : ''}
+    <button class="btn secondary" id="clear-override">Revert forecast to baseline</button>
+    ${rule('User management', `${Store.allUsers().length} accounts`)}
+    <div class="card">
+      ${Store.allUsers().map((u) => `
+        <div class="row user-row">
+          <div class="grow"><strong>${esc(u.name)}</strong>
+            <div class="sub">${esc(u.user)} · ${esc(u.role)}${u.seeded ? ' · built-in demo' : ''}</div></div>
+          ${u.seeded ? '' : `<button class="mini-btn danger" data-del-user="${esc(u.user)}">Remove</button>`}
+        </div>`).join('')}
+    </div>
+    <form id="adduser-form" class="card">
+      <h3>Add account</h3>
+      <div class="ed-grid">
+        <div><label for="au-name">Full name</label><input id="au-name" name="name" maxlength="60" required></div>
+        <div><label for="au-user">Username</label><input id="au-user" name="user" maxlength="40" autocapitalize="none" required></div>
+        <div><label for="au-pin">PIN (4–8 digits)</label><input id="au-pin" name="pin" inputmode="numeric" maxlength="8" required></div>
+        <div><label for="au-role">Access tier</label>
+          <select id="au-role" name="role">
+            <option value="member">Member</option>
+            <option value="observer">Observer</option>
+            <option value="forecaster">Forecaster</option>
+          </select></div>
+      </div>
+      <p class="note" id="au-err" role="alert" hidden></p>
+      <button class="btn" type="submit">Create account</button>
+    </form>
+    ${rule('Migration', 'To a hosted backend')}
+    <div class="card">
+      <p class="sub">Credentials are stored as salted SHA-256 hashes — never plaintext. The export bundle carries those hash records plus observations, forecast updates and settings; a hosted backend imports it and verifies users with the same scheme on first login, then re-hashes to its own. That's the standard staged auth migration, ready to run when the backend lands.</p>
+      <button class="btn secondary" id="export-btn">Export migration bundle (JSON)</button>
+      <label for="import-file" style="margin-top:14px">Import bundle</label>
+      <input id="import-file" type="file" accept="application/json">
+      <p class="note" id="import-msg" hidden></p>
+    </div>` : ''}
     ${s.role === 'observer' ? `
     <a class="card tappable" href="#/observe"><div class="row">${icon('binoculars', 'icon accent')}
       <div class="grow"><h3>Record field data</h3><div class="sub">Snow profiles, stability tests and observations — CAA-style conventions</div></div>
@@ -1039,6 +1072,42 @@ function bindView() {
   });
   const co = $('#clear-override');
   if (co) co.addEventListener('click', () => { Store.clearOverride(store.region); render(); });
+
+  // user management (forecaster/admin)
+  const auf = $('#adduser-form');
+  if (auf) auf.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const d = Object.fromEntries(new FormData(auf).entries());
+    const res = await Store.addUser(d);
+    if (res.error) {
+      const err = $('#au-err'); err.textContent = res.error; err.removeAttribute('hidden');
+    } else render();
+  });
+  document.querySelectorAll('[data-del-user]').forEach((b) =>
+    b.addEventListener('click', () => {
+      if (confirm(`Remove account "${b.dataset.delUser}"?`)) { Store.removeUser(b.dataset.delUser); render(); }
+    }));
+  const ex = $('#export-btn');
+  if (ex) ex.addEventListener('click', () => {
+    const blob = new Blob([JSON.stringify(Store.exportBundle(), null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'msc-app-migration.json';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  });
+  const imf = $('#import-file');
+  if (imf) imf.addEventListener('change', async () => {
+    const f = imf.files?.[0];
+    if (!f || f.size > 2_000_000) return;
+    try {
+      const res = Store.importBundle(JSON.parse(await f.text()));
+      const msg = $('#import-msg');
+      msg.textContent = res.error || `Imported ${res.users} account(s).`;
+      msg.removeAttribute('hidden');
+      if (!res.error) setTimeout(render, 900);
+    } catch { const msg = $('#import-msg'); msg.textContent = 'Could not read that file as JSON.'; msg.removeAttribute('hidden'); }
+  });
 
   // forecast editor
   const ef = $('#edit-form');

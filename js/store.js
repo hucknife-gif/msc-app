@@ -13,7 +13,8 @@ const Store = (() => {
     theme: 'msc.theme',
     custom: 'msc.custom',
     override: 'msc.override.', // + regionId
-    obs: 'msc.fieldObs'
+    obs: 'msc.fieldObs',
+    users: 'msc.users' // admin-created accounts (hashed, never plaintext)
   };
 
   // seeded demo accounts (documented on the Account screen).
@@ -42,11 +43,65 @@ const Store = (() => {
   const write = (k, v) => localStorage.setItem(k, JSON.stringify(v));
 
   return {
+    // ---- users (seeded demo + admin-created) ----
+    customUsers() { return read(K.users, []); },
+    allUsers() { return [...USERS.map((u) => ({ ...u, seeded: true })), ...this.customUsers()]; },
+    async addUser({ name, user, pin, role }) {
+      const uname = String(user).trim().toLowerCase().slice(0, 40);
+      if (!uname || !/^[a-z0-9_.-]+$/.test(uname)) return { error: 'Username: letters, numbers, dot, dash only.' };
+      if (this.allUsers().some((x) => x.user === uname)) return { error: 'That username already exists.' };
+      if (!/^\d{4,8}$/.test(String(pin).trim())) return { error: 'PIN must be 4–8 digits.' };
+      if (!['member', 'observer', 'forecaster'].includes(role)) return { error: 'Invalid role.' };
+      const hash = await sha256Hex(`msc:${uname}:${String(pin).trim()}`);
+      const list = this.customUsers();
+      list.push({ user: uname, name: String(name).trim().slice(0, 60) || uname, role, hash, created: Date.now() });
+      write(K.users, list);
+      return { ok: true };
+    },
+    removeUser(uname) {
+      write(K.users, this.customUsers().filter((u) => u.user !== uname));
+      const s = this.session();
+      if (s && s.user === uname) this.logout();
+    },
+
+    // ---- migration (to a future hosted backend) ----
+    // Exports salted SHA-256 credential records — never plaintext (plaintext
+    // is never stored, so "transferring passwords" means transferring hashes;
+    // the new system verifies with the same scheme on first login, then
+    // re-hashes to its own. Standard staged auth migration.)
+    exportBundle() {
+      return {
+        format: 'msc-app-migration',
+        version: 1,
+        exported: new Date().toISOString(),
+        hashScheme: 'sha256(msc:<user>:<pin>)',
+        users: this.customUsers(),
+        observations: this.observations(),
+        overrides: Object.fromEntries(
+          ['main-range', 'dividing-range'].map((r) => [r, this.override(r)]).filter(([, v]) => v)
+        ),
+        settings: this.custom()
+      };
+    },
+    importBundle(bundle) {
+      if (bundle?.format !== 'msc-app-migration' || bundle.version !== 1) {
+        return { error: 'Not a valid migration bundle.' };
+      }
+      const clean = (Array.isArray(bundle.users) ? bundle.users : []).filter((u) =>
+        typeof u?.user === 'string' && /^[a-z0-9_.-]{1,40}$/.test(u.user) &&
+        typeof u?.hash === 'string' && /^[0-9a-f]{64}$/.test(u.hash) &&
+        ['member', 'observer', 'forecaster'].includes(u.role)
+      ).map((u) => ({ user: u.user, name: String(u.name || u.user).slice(0, 60), role: u.role, hash: u.hash, created: u.created || Date.now() }));
+      write(K.users, clean);
+      if (Array.isArray(bundle.observations)) write(K.obs, bundle.observations.slice(0, 200));
+      return { ok: true, users: clean.length };
+    },
+
     // ---- auth ----
     async login(user, pin) {
       const uname = String(user).trim().toLowerCase().slice(0, 40);
       const hash = await sha256Hex(`msc:${uname}:${String(pin).trim()}`);
-      const u = USERS.find((x) => x.user === uname && x.hash === hash);
+      const u = this.allUsers().find((x) => x.user === uname && x.hash === hash);
       if (!u) return null;
       const session = { user: u.user, name: u.name, role: u.role, since: Date.now() };
       write(K.session, session);
