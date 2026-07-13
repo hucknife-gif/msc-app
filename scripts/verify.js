@@ -71,6 +71,23 @@ const iPhone = {
   await new Promise((r) => setTimeout(r, 450));
   await page.screenshot({ path: path.join(OUT, 'today-full.png'), fullPage: true });
 
+  // interactions: hazard-chip sheet and aspect-rose sheet
+  await page.evaluate(() => { localStorage.setItem('msc.region', 'main-range'); location.hash = '#/today'; });
+  await new Promise((r) => setTimeout(r, 450));
+  await page.click('[data-hazard="exposure"]');
+  await new Promise((r) => setTimeout(r, 350));
+  let sheetText = await page.evaluate(() => document.querySelector('#sheet-root .sheet')?.innerText || '');
+  if (!sheetText.toLowerCase().includes('exposure')) problems.push('hazard sheet did not open');
+  await page.screenshot({ path: path.join(OUT, 'sheet-hazard.png') });
+  await page.click('.sheet-close');
+  await new Promise((r) => setTimeout(r, 300));
+  await page.click('[data-aspect="SE"]');
+  await new Promise((r) => setTimeout(r, 350));
+  sheetText = await page.evaluate(() => document.querySelector('#sheet-root .sheet')?.innerText || '');
+  if (!sheetText.toLowerCase().includes('south-east')) problems.push('aspect sheet did not open');
+  await page.screenshot({ path: path.join(OUT, 'sheet-aspect.png') });
+  await page.click('.sheet-backdrop');
+
   // service worker registration (http localhost counts as secure context)
   const swOk = await page.evaluate(async () => {
     if (!('serviceWorker' in navigator)) return false;

@@ -76,6 +76,154 @@ function rule(title, meta = '') {
   return `<div class="rule"><h2 class="t">${title}</h2>${meta ? `<span class="m">${meta}</span>` : ''}</div>`;
 }
 
+// ---------- charts (inline SVG, instrument-cyan data colour) ----------
+const CHART_W = 340, CHART_H = 96;
+
+function scalePts(values, w, h, pad = 10) {
+  const min = Math.min(...values), max = Math.max(...values);
+  const span = (max - min) || 1;
+  return values.map((v, i) => [
+    pad + (i * (w - pad * 2)) / (values.length - 1),
+    h - pad - ((v - min) * (h - pad * 2)) / span
+  ]);
+}
+
+// smooth line + soft area fill, direct min/max labels (no cramped axes)
+function lineChart(values, labels, unit, id) {
+  const pts = scalePts(values, CHART_W, CHART_H);
+  const d = pts.map((p, i) => {
+    if (!i) return `M${p[0]},${p[1]}`;
+    const [px, py] = pts[i - 1];
+    const cx = (px + p[0]) / 2;
+    return `C${cx},${py} ${cx},${p[1]} ${p[0]},${p[1]}`;
+  }).join(' ');
+  const area = `${d} L${pts.at(-1)[0]},${CHART_H - 4} L${pts[0][0]},${CHART_H - 4} Z`;
+  const iMax = values.indexOf(Math.max(...values));
+  const iMin = values.indexOf(Math.min(...values));
+  const lbl = (i, anchor) => `<text x="${pts[i][0]}" y="${pts[i][1] - 7}" text-anchor="${anchor}" class="ch-lbl">${values[i]}${unit}</text>`;
+  return `<svg class="chart" viewBox="0 0 ${CHART_W} ${CHART_H + 18}" role="img" aria-label="${labels[0]}–${labels.at(-1)} values ${values.join(', ')}${unit}">
+    <defs><linearGradient id="ga-${id}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="var(--data)" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="var(--data)" stop-opacity="0"/>
+    </linearGradient></defs>
+    ${[0.25, 0.5, 0.75].map((f) => `<line x1="10" x2="${CHART_W - 10}" y1="${CHART_H * f}" y2="${CHART_H * f}" class="ch-grid"/>`).join('')}
+    <path d="${area}" fill="url(#ga-${id})"/>
+    <path d="${d}" class="ch-line"/>
+    ${pts.map((p, i) => `<circle cx="${p[0]}" cy="${p[1]}" r="${i === iMax || i === iMin ? 3.5 : 2}" class="ch-dot"/>`).join('')}
+    ${lbl(iMax, iMax < 2 ? 'start' : iMax > values.length - 3 ? 'end' : 'middle')}
+    ${iMin !== iMax ? lbl(iMin, iMin < 2 ? 'start' : iMin > values.length - 3 ? 'end' : 'middle') : ''}
+    ${labels.map((t, i) => `<text x="${pts[i][0]}" y="${CHART_H + 13}" text-anchor="middle" class="ch-axis">${t}</text>`).join('')}
+  </svg>`;
+}
+
+function barChart(values, labels, unit) {
+  const max = Math.max(...values, 1);
+  const pad = 10, bw = (CHART_W - pad * 2) / values.length;
+  return `<svg class="chart" viewBox="0 0 ${CHART_W} ${CHART_H + 18}" role="img" aria-label="values ${values.join(', ')}${unit}">
+    ${values.map((v, i) => {
+      const h = v === 0 ? 2 : (v / max) * (CHART_H - 26);
+      const x = pad + i * bw + bw * 0.2;
+      return `<rect x="${x}" y="${CHART_H - 4 - h}" width="${bw * 0.6}" height="${h}" rx="2.5"
+        class="${v === 0 ? 'ch-bar-nil' : 'ch-bar'}"/>` +
+        (v > 0 ? `<text x="${x + bw * 0.3}" y="${CHART_H - 10 - h}" text-anchor="middle" class="ch-lbl">${v}</text>` : '');
+    }).join('')}
+    ${labels.map((t, i) => `<text x="${pad + i * bw + bw * 0.5}" y="${CHART_H + 13}" text-anchor="middle" class="ch-axis">${t}</text>`).join('')}
+  </svg>`;
+}
+
+// 8-sector aspect rose — wind-slab loading per compass aspect
+const ASPECT_ORDER = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+const ASPECT_NAMES = { N: 'North', NE: 'North-east', E: 'East', SE: 'South-east', S: 'South', SW: 'South-west', W: 'West', NW: 'North-west' };
+const LOAD_NAMES = ['Minimal', 'Isolated', 'Building', 'Heavy'];
+
+function aspectRose(aspects, interactive = true) {
+  const cx = 80, cy = 80, r0 = 26, r1 = 72;
+  const sectors = ASPECT_ORDER.map((a, i) => {
+    const a0 = ((i * 45 - 112.5) * Math.PI) / 180;
+    const a1 = ((i * 45 - 67.5) * Math.PI) / 180;
+    const p = (r, ang) => `${cx + r * Math.cos(ang)},${cy + r * Math.sin(ang)}`;
+    const d = `M${p(r0, a0)} A${r0},${r0} 0 0 1 ${p(r0, a1)} L${p(r1, a1)} A${r1},${r1} 0 0 0 ${p(r1, a0)} Z`;
+    const sev = aspects[a] ?? 0;
+    return `<path d="${d}" class="rose-sec rose-sev-${sev}" ${interactive ? `data-aspect="${a}" role="button" tabindex="0" aria-label="${ASPECT_NAMES[a]}: ${LOAD_NAMES[sev]} wind-slab loading"` : ''}/>`;
+  }).join('');
+  const labels = ASPECT_ORDER.map((a, i) => {
+    const ang = ((i * 45 - 90) * Math.PI) / 180;
+    return `<text x="${cx + 85 * Math.cos(ang)}" y="${cy + 85 * Math.sin(ang) + 3.5}" text-anchor="middle" class="rose-lbl">${a}</text>`;
+  }).join('');
+  return `<svg class="rose" viewBox="-14 -14 188 188">
+    <circle cx="${cx}" cy="${cy}" r="${r1}" class="rose-ring"/>
+    <circle cx="${cx}" cy="${cy}" r="${r0}" class="rose-ring"/>
+    ${sectors}${labels}
+    <text x="${cx}" y="${cy + 4}" text-anchor="middle" class="rose-core">ASPECT</text>
+  </svg>`;
+}
+
+// elevation cross-section: ridgeline profile split into rated bands
+function elevationSection(rep) {
+  const bands = [
+    { key: 'alpine', label: 'ALPINE', elev: '1850 m+', y: 12, h: 34 },
+    { key: 'subalpine', label: 'SUBALPINE', elev: '< treeline', y: 46, h: 34 }
+  ];
+  return `<svg class="elev" viewBox="0 0 340 96">
+    <path d="M0 96 L0 78 L54 58 L96 70 L150 22 L196 48 L244 30 L296 56 L340 40 L340 96 Z" class="elev-mtn"/>
+    ${bands.map((b) => {
+      const sev = LEVEL_SEVERITY.avalanche[rep.bands[b.key].dangers.avalanche] ?? 0;
+      return `
+      <line x1="8" x2="332" y1="${b.y + b.h}" y2="${b.y + b.h}" class="elev-line"/>
+      <rect x="8" y="${b.y}" width="5" height="${b.h}" rx="2.5" class="sev-${sev}"/>
+      <text x="22" y="${b.y + 14}" class="elev-band">${b.label}</text>
+      <text x="22" y="${b.y + 27}" class="elev-meta">${b.elev} · Avalanche ${esc(rep.bands[b.key].dangers.avalanche)}</text>`;
+    }).join('')}
+  </svg>`;
+}
+
+// ---------- bottom sheet ----------
+function openSheet(html) {
+  closeSheet();
+  const wrap = document.createElement('div');
+  wrap.id = 'sheet-root';
+  wrap.innerHTML = `<div class="sheet-backdrop"></div>
+    <div class="sheet" role="dialog" aria-modal="true">
+      <div class="sheet-grab"></div>${html}
+      <button class="btn secondary sheet-close">Close</button>
+    </div>`;
+  document.body.appendChild(wrap);
+  requestAnimationFrame(() => wrap.classList.add('open'));
+  wrap.querySelector('.sheet-backdrop').addEventListener('click', closeSheet);
+  wrap.querySelector('.sheet-close').addEventListener('click', closeSheet);
+}
+function closeSheet() {
+  const el = document.getElementById('sheet-root');
+  if (!el) return;
+  el.classList.remove('open');
+  setTimeout(() => el.remove(), 220);
+}
+
+function hazardSheet(cat, rep) {
+  const c = HAZARD_CATEGORIES[cat];
+  const alp = rep.bands.alpine.dangers[cat];
+  const sub = rep.bands.subalpine.dangers[cat];
+  const scale = HAZARD_LEVELS[cat].map((l) =>
+    `<div class="scale-row ${l === alp ? 'now' : ''}">
+      <span class="scale-dot sev-${LEVEL_SEVERITY[cat][l]}"></span>
+      <span class="scale-name">${esc(l)}</span>
+      ${l === alp ? '<span class="scale-now">Alpine today</span>' : l === sub ? '<span class="scale-now dim">Subalpine</span>' : ''}
+    </div>`).join('');
+  return `<h3 class="sheet-title">${esc(c.label)}</h3>
+    <p class="sheet-body">${esc(c.desc)}</p>
+    <div class="scale">${scale}</div>`;
+}
+
+function aspectSheet(aspect, sev) {
+  return `<h3 class="sheet-title">${esc(ASPECT_NAMES[aspect])} aspects</h3>
+    <p class="sheet-body">Wind-slab loading: <strong>${esc(LOAD_NAMES[sev])}</strong>.
+    ${sev >= 2
+      ? 'Lee features on this aspect are collecting wind-transported snow — treat convex rolls, gully walls and cornice aprons as suspect, especially just below ridgelines.'
+      : sev === 1
+        ? 'Isolated pockets only — most terrain on this aspect is behaving, but probe suspicious wind-textured patches near ridgelines.'
+        : 'Little recent loading on this aspect. Standard care still applies around cornices and steep convexities.'}</p>`;
+}
+
 // signature motif: topographic contours + Main Range ridgeline silhouette
 const CONTOUR_SVG = `<svg class="contours" viewBox="0 0 400 180" preserveAspectRatio="none" aria-hidden="true">
   ${[0, 1, 2, 3, 4].map((i) => `<path d="M-10 ${28 + i * 34} C 60 ${8 + i * 34}, 120 ${44 + i * 34}, 200 ${22 + i * 34} S 340 ${40 + i * 34}, 410 ${16 + i * 34}"
@@ -101,11 +249,12 @@ function statusBadge(rep) {
 function hazardChips(dangers) {
   return `<div class="hazard-grid">` + Object.keys(HAZARD_CATEGORIES).map((cat) => {
     const lvl = dangers[cat];
-    return `<div class="hazard-chip">
+    return `<button class="hazard-chip" data-hazard="${cat}" aria-label="${esc(HAZARD_CATEGORIES[cat].label)}: ${esc(lvl)} — more detail">
       <div class="lvl-bar ${sevClass(cat, lvl)}"></div>
-      <div><div class="name">${esc(HAZARD_CATEGORIES[cat].label)}</div>
+      <div class="hc-txt"><div class="name">${esc(HAZARD_CATEGORIES[cat].label)}</div>
       <div class="lvl">${esc(lvl)}</div></div>
-    </div>`;
+      <svg class="icon hc-info" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/></svg>
+    </button>`;
   }).join('') + `</div>`;
 }
 
@@ -149,6 +298,26 @@ function viewToday() {
       <div class="cell"><div class="k">Snow next 24 h</div><div class="v">${esc(rep.weather.snow24)}</div></div>
     </div>
 
+    <div class="card chart-card">
+      <div class="chart-head"><span class="chart-t">Temperature</span><span class="chart-u">°C · alpine</span></div>
+      ${lineChart(rep.trend.temp, rep.trend.hours, '°', 'tmp')}
+      <div class="chart-head"><span class="chart-t">Wind</span><span class="chart-u">km/h gusting</span></div>
+      ${lineChart(rep.trend.wind, rep.trend.hours, '', 'wnd')}
+      <div class="chart-head"><span class="chart-t">Snowfall</span><span class="chart-u">cm / 3 h</span></div>
+      ${barChart(rep.trend.snow, rep.trend.hours, 'cm')}
+    </div>
+
+    ${rule('Wind loading', 'Alpine · by aspect')}
+    <div class="card rose-card">
+      ${aspectRose(rep.aspects.alpine)}
+      <div class="rose-side">
+        <p class="sub">Where the wind has been parking snow. Tap a sector for what that means on the ground.</p>
+        <div class="rose-legend">
+          ${LOAD_NAMES.map((n, i) => `<span class="rose-key"><span class="scale-dot sev-${i}"></span>${n}</span>`).join('')}
+        </div>
+      </div>
+    </div>
+
     ${rule('Quick access')}
     <a class="card tappable" href="#/report"><div class="row">${icon('report', 'icon accent')}
       <div class="grow"><h3>Full conditions report</h3><div class="sub">Danger by elevation band, hazards, travel advice</div></div>
@@ -179,7 +348,8 @@ function viewReport() {
   const region = REGIONS.find((r) => r.id === store.region);
   let body = '';
   if (tab === 'danger') {
-    body = bandSection('Alpine', 'Above treeline · ~1850 m+', rep.bands.alpine)
+    body = `<div class="card elev-card">${elevationSection(rep)}</div>`
+         + bandSection('Alpine', 'Above treeline · ~1850 m+', rep.bands.alpine)
          + bandSection('Subalpine', 'Below treeline', rep.bands.subalpine);
   } else if (tab === 'hazards') {
     body = Object.keys(HAZARD_CATEGORIES).map((cat) => {
@@ -190,7 +360,11 @@ function viewReport() {
         <div class="lvl-bar ${sevClass(cat, alp)}" style="width:5px;align-self:stretch;border-radius:3px"></div>
         <div class="grow"><h3>${esc(c.label)} — ${esc(alp)} <span class="sub">(subalpine: ${esc(sub)})</span></h3>
         <div class="sub">${esc(c.desc)}</div></div></div></div>`;
-    }).join('');
+    }).join('')
+    + rule('Wind loading by aspect', 'Alpine band')
+    + `<div class="card rose-card">${aspectRose(rep.aspects.alpine)}
+       <div class="rose-side"><p class="sub">Lee-slope slab hazard concentrates on loaded aspects. Tap a sector.</p>
+       <div class="rose-legend">${LOAD_NAMES.map((n, i) => `<span class="rose-key"><span class="scale-dot sev-${i}"></span>${n}</span>`).join('')}</div></div></div>`;
   } else {
     body = `<div class="card article"><p>${esc(rep.details)}</p></div>
       ${rule('Regional outlook', 'Synopsis')}
@@ -330,6 +504,15 @@ function bindView() {
     b.addEventListener('click', () => { store.reportTab = b.dataset.rtab; render(); }));
   document.querySelectorAll('[data-nav]').forEach((b) =>
     b.addEventListener('click', () => { location.hash = b.dataset.nav; }));
+
+  const rep = currentReport();
+  document.querySelectorAll('[data-hazard]').forEach((b) =>
+    b.addEventListener('click', () => openSheet(hazardSheet(b.dataset.hazard, rep))));
+  document.querySelectorAll('[data-aspect]').forEach((s) => {
+    const open = () => openSheet(aspectSheet(s.dataset.aspect, rep.aspects.alpine[s.dataset.aspect] ?? 0));
+    s.addEventListener('click', open);
+    s.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); } });
+  });
 
   const form = $('#obs-form');
   if (form) {
