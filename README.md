@@ -4,9 +4,20 @@ An installable iPhone app (PWA) recreating the Mountain Safety Collective
 experience — mountainsafetycollective.org — built to avalanche-app UX best
 practice. Personal-use project; not affiliated with MSC.
 
+**Live:** https://hucknife-gif.github.io/msc-app/
+
 ## What's in it
 
-Five tabs, bottom navigation, offline-first, alpine dark theme:
+Five tabs, bottom navigation, offline-first. Light theme (white + MSC red)
+by default with a dark-mode toggle. Accounts with roles: **forecaster**
+(edit/publish the forecast with an update badge, customise app modules and
+accent) and **observer** (CAA-convention snow-profile field data entry).
+Danger ratings presented MSC-style: split alpine/subalpine mountain graphic
+with per-band score banners; numbered hazard cards with elevation triangle,
+petal aspect rose, and size/likelihood gauges. Security: CSP, hashed demo
+credentials, 12 h session expiry, same-origin service-worker cache, all
+dynamic content HTML-escaped. See docs/APPLE-LAUNCH.md for the App Store
+roadmap.
 
 - **Today** — day score hero (Usual Caution / Extra Caution / Travel Not
   Recommended), region toggle (NSW Main Range / VIC Dividing Range), four
