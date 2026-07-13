@@ -1,2 +1,4 @@
 app/icons/TRASH/
 app/icons/TRASH-FILES.md
+node_modules/
+.DS_Store
