@@ -25,6 +25,13 @@ const iPhone = {
   // deterministic tests: pin the app to bundled sample data (no live fetch)
   await page.evaluateOnNewDocument(() => localStorage.setItem('msc.disableLive', '1'));
 
+  // page.type/page.click do a one-shot element lookup that intermittently
+  // goes stale after same-document hash navigations (evaluate() keeps seeing
+  // the element; the isolated-world query returns null). waitForSelector
+  // polls, so interactions ride out the context churn.
+  const type = async (sel, text) => (await page.waitForSelector(sel, { timeout: 8000 })).type(text);
+  const click = async (sel) => (await page.waitForSelector(sel, { timeout: 8000 })).click();
+
   const problems = [];
   page.on('console', (m) => { if (m.type() === 'error') problems.push(`console error: ${m.text()}`); });
   page.on('pageerror', (e) => problems.push(`page error: ${e.message}`));
@@ -77,26 +84,26 @@ const iPhone = {
   // interactions: hazard-chip sheet and aspect-rose sheet
   await page.evaluate(() => { localStorage.setItem('msc.region', 'main-range'); location.hash = '#/today'; });
   await new Promise((r) => setTimeout(r, 450));
-  await page.click('[data-hazard="exposure"]');
+  await click('[data-hazard="exposure"]');
   await new Promise((r) => setTimeout(r, 350));
   let sheetText = await page.evaluate(() => document.querySelector('#sheet-root .sheet')?.innerText || '');
   if (!sheetText.toLowerCase().includes('exposure')) problems.push('hazard sheet did not open');
   await page.screenshot({ path: path.join(OUT, 'sheet-hazard.png') });
-  await page.click('.sheet-close');
+  await click('.sheet-close');
   await new Promise((r) => setTimeout(r, 300));
-  await page.click('[data-aspect="SE"]');
+  await click('[data-aspect="SE"]');
   await new Promise((r) => setTimeout(r, 350));
   sheetText = await page.evaluate(() => document.querySelector('#sheet-root .sheet')?.innerText || '');
   if (!sheetText.toLowerCase().includes('south-east')) problems.push('aspect sheet did not open');
   await page.screenshot({ path: path.join(OUT, 'sheet-aspect.png') });
-  await page.click('.sheet-backdrop');
+  await click('.sheet-backdrop');
 
   // account flow: forecaster login → editor gate opens
   await page.evaluate(() => { localStorage.clear(); location.hash = '#/account'; });
   await new Promise((r) => setTimeout(r, 450));
-  await page.type('#lg-user', 'forecaster');
-  await page.type('#lg-pin', '2626');
-  await page.click('#login-form .btn');
+  await type('#lg-user', 'forecaster');
+  await type('#lg-pin', '2626');
+  await click('#login-form .btn');
   await new Promise((r) => setTimeout(r, 400));
   const acctText = await page.evaluate(() => document.querySelector('#view').innerText.toLowerCase());
   if (!acctText.includes('edit forecast')) problems.push('forecaster login did not unlock editor');
@@ -107,12 +114,36 @@ const iPhone = {
   if (!editText.includes('publish update')) problems.push('forecast editor did not render');
   await page.screenshot({ path: path.join(OUT, 'editor.png') });
 
-  // observer flow: field-data form renders
-  await page.evaluate(() => { localStorage.removeItem('msc.session'); location.hash = '#/account'; });
+  // admin user management: create account, sign in as it
+  await page.evaluate(() => { location.hash = '#/account'; });
   await new Promise((r) => setTimeout(r, 450));
-  await page.type('#lg-user', 'observer');
-  await page.type('#lg-pin', '1850');
-  await page.click('#login-form .btn');
+  await page.evaluate(() => {
+    document.getElementById('au-name').value = 'Test Patroller';
+    document.getElementById('au-user').value = 'patroller1';
+    document.getElementById('au-pin').value = '4321';
+    document.getElementById('au-role').value = 'observer';
+    document.getElementById('adduser-form').requestSubmit();
+  });
+  await new Promise((r) => setTimeout(r, 500));
+  const userList = await page.evaluate(() => document.querySelector('#view').innerText.toLowerCase());
+  if (!userList.includes('patroller1')) problems.push('admin user creation failed');
+  await page.evaluate(() => { localStorage.removeItem('msc.session'); render(); });
+  await new Promise((r) => setTimeout(r, 450));
+  await type('#lg-user', 'patroller1');
+  await type('#lg-pin', '4321');
+  await click('#login-form .btn');
+  await new Promise((r) => setTimeout(r, 500));
+  const newUserAcct = await page.evaluate(() => document.querySelector('#view').innerText.toLowerCase());
+  if (!newUserAcct.includes('test patroller')) problems.push('created user could not sign in');
+
+  // observer flow: field-data form renders
+  // (hash is already #/account here, so assigning it again would be a no-op
+  // — re-render explicitly after dropping the session)
+  await page.evaluate(() => { localStorage.removeItem('msc.session'); render(); });
+  await new Promise((r) => setTimeout(r, 450));
+  await type('#lg-user', 'observer');
+  await type('#lg-pin', '1850');
+  await click('#login-form .btn');
   await new Promise((r) => setTimeout(r, 400));
   await page.evaluate(() => { location.hash = '#/observe'; });
   await new Promise((r) => setTimeout(r, 450));
@@ -127,9 +158,9 @@ const iPhone = {
   if (!archText.includes('member feature')) problems.push('archive not gated for base tier');
   await page.evaluate(() => { location.hash = '#/account'; });
   await new Promise((r) => setTimeout(r, 450));
-  await page.type('#lg-user', 'member');
-  await page.type('#lg-pin', '0000');
-  await page.click('#login-form .btn');
+  await type('#lg-user', 'member');
+  await type('#lg-pin', '0000');
+  await click('#login-form .btn');
   await new Promise((r) => setTimeout(r, 400));
   await page.evaluate(() => { location.hash = '#/archive'; });
   await new Promise((r) => setTimeout(r, 450));
@@ -140,8 +171,8 @@ const iPhone = {
   // dark mode toggle
   await page.evaluate(() => { localStorage.removeItem('msc.session'); location.hash = '#/today'; });
   await new Promise((r) => setTimeout(r, 400));
-  // DOM-dispatched click: hit-testing is separately covered (elementFromPoint
-  // probe); long emulated sessions made page.click flaky here.
+  // DOM-dispatched click: page.click's one-shot lookup can go stale after
+  // hash navigations (same churn the type/click helpers above absorb).
   const themeBefore = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
   await page.evaluate(() => document.getElementById('theme-btn').click());
   await new Promise((r) => setTimeout(r, 250));
