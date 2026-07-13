@@ -7,7 +7,7 @@ const path = require('path');
 const BASE = process.env.BASE_URL || 'http://localhost:8642/index.html';
 const OUT = path.join(__dirname, '..', 'docs', 'screens');
 const VIEWS = ['today', 'report', 'observe', 'learn', 'safety',
-  'learn/backcountry-tips', 'report--vic', 'report--hazards'];
+  'learn/backcountry-tips', 'report--vic', 'report--hazards', 'account'];
 
 const iPhone = {
   viewport: { width: 393, height: 852, deviceScaleFactor: 3, isMobile: true, hasTouch: true },
@@ -56,7 +56,8 @@ const iPhone = {
     const MARKERS = {
       today: 'DAY SCORE', report: 'Conditions report', observe: 'Observations',
       learn: 'Learn', safety: 'Call 000', 'learn/backcountry-tips': 'Ten backcountry',
-      'report--vic': 'VIC Dividing Range', 'report--hazards': 'Wind chill'
+      'report--vic': 'VIC Dividing Range', 'report--hazards': 'Primary hazard',
+      account: 'Demo accounts'
     };
     const text = await page.evaluate(() => document.querySelector('#view').innerText);
     const marker = MARKERS[view];
@@ -87,6 +88,45 @@ const iPhone = {
   if (!sheetText.toLowerCase().includes('south-east')) problems.push('aspect sheet did not open');
   await page.screenshot({ path: path.join(OUT, 'sheet-aspect.png') });
   await page.click('.sheet-backdrop');
+
+  // account flow: forecaster login → editor gate opens
+  await page.evaluate(() => { localStorage.clear(); location.hash = '#/account'; });
+  await new Promise((r) => setTimeout(r, 450));
+  await page.type('#lg-user', 'forecaster');
+  await page.type('#lg-pin', '2626');
+  await page.click('#login-form .btn');
+  await new Promise((r) => setTimeout(r, 400));
+  const acctText = await page.evaluate(() => document.querySelector('#view').innerText.toLowerCase());
+  if (!acctText.includes('edit forecast')) problems.push('forecaster login did not unlock editor');
+  await page.screenshot({ path: path.join(OUT, 'account-forecaster.png') });
+  await page.evaluate(() => { location.hash = '#/edit'; });
+  await new Promise((r) => setTimeout(r, 450));
+  const editText = await page.evaluate(() => document.querySelector('#view').innerText.toLowerCase());
+  if (!editText.includes('publish update')) problems.push('forecast editor did not render');
+  await page.screenshot({ path: path.join(OUT, 'editor.png') });
+
+  // observer flow: field-data form renders
+  await page.evaluate(() => { localStorage.removeItem('msc.session'); location.hash = '#/account'; });
+  await new Promise((r) => setTimeout(r, 450));
+  await page.type('#lg-user', 'observer');
+  await page.type('#lg-pin', '1850');
+  await page.click('#login-form .btn');
+  await new Promise((r) => setTimeout(r, 400));
+  await page.evaluate(() => { location.hash = '#/observe'; });
+  await new Promise((r) => setTimeout(r, 450));
+  const obsText = await page.evaluate(() => document.querySelector('#view').innerText.toLowerCase());
+  if (!obsText.includes('snow profile')) problems.push('observer field-data form did not render');
+  await page.screenshot({ path: path.join(OUT, 'observer-form.png') });
+
+  // dark mode toggle
+  await page.evaluate(() => { localStorage.removeItem('msc.session'); location.hash = '#/today'; });
+  await new Promise((r) => setTimeout(r, 400));
+  await page.click('#theme-btn');
+  await new Promise((r) => setTimeout(r, 300));
+  const theme = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
+  if (theme !== 'dark') problems.push('dark mode toggle failed');
+  await page.screenshot({ path: path.join(OUT, 'today-dark.png') });
+  await page.click('#theme-btn'); // back to light
 
   // service worker registration (http localhost counts as secure context)
   const swOk = await page.evaluate(async () => {
