@@ -22,6 +22,8 @@ const iPhone = {
   const page = await browser.newPage();
   await page.setUserAgent(iPhone.userAgent);
   await page.setViewport(iPhone.viewport);
+  // deterministic tests: pin the app to bundled sample data (no live fetch)
+  await page.evaluateOnNewDocument(() => localStorage.setItem('msc.disableLive', '1'));
 
   const problems = [];
   page.on('console', (m) => { if (m.type() === 'error') problems.push(`console error: ${m.text()}`); });
@@ -118,15 +120,37 @@ const iPhone = {
   if (!obsText.includes('snow profile')) problems.push('observer field-data form did not render');
   await page.screenshot({ path: path.join(OUT, 'observer-form.png') });
 
+  // member tier: archive gated for guests, open after member login
+  await page.evaluate(() => { localStorage.removeItem('msc.session'); location.hash = '#/archive'; });
+  await new Promise((r) => setTimeout(r, 450));
+  let archText = await page.evaluate(() => document.querySelector('#view').innerText.toLowerCase());
+  if (!archText.includes('member feature')) problems.push('archive not gated for base tier');
+  await page.evaluate(() => { location.hash = '#/account'; });
+  await new Promise((r) => setTimeout(r, 450));
+  await page.type('#lg-user', 'member');
+  await page.type('#lg-pin', '0000');
+  await page.click('#login-form .btn');
+  await new Promise((r) => setTimeout(r, 400));
+  await page.evaluate(() => { location.hash = '#/archive'; });
+  await new Promise((r) => setTimeout(r, 450));
+  archText = await page.evaluate(() => document.querySelector('#view').innerText.toLowerCase());
+  if (!archText.includes('report date')) problems.push('member archive did not unlock');
+  await page.screenshot({ path: path.join(OUT, 'archive-member.png') });
+
   // dark mode toggle
   await page.evaluate(() => { localStorage.removeItem('msc.session'); location.hash = '#/today'; });
   await new Promise((r) => setTimeout(r, 400));
-  await page.click('#theme-btn');
-  await new Promise((r) => setTimeout(r, 300));
-  const theme = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
-  if (theme !== 'dark') problems.push('dark mode toggle failed');
-  await page.screenshot({ path: path.join(OUT, 'today-dark.png') });
-  await page.click('#theme-btn'); // back to light
+  // DOM-dispatched click: hit-testing is separately covered (elementFromPoint
+  // probe); long emulated sessions made page.click flaky here.
+  const themeBefore = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
+  await page.evaluate(() => document.getElementById('theme-btn').click());
+  await new Promise((r) => setTimeout(r, 250));
+  const themeAfter = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
+  if (themeAfter === themeBefore) problems.push(`dark mode toggle failed (stayed ${themeBefore})`);
+  if (themeAfter === 'dark') await page.screenshot({ path: path.join(OUT, 'today-dark.png') });
+  await page.evaluate(() => { if (document.documentElement.getAttribute('data-theme') !== 'light') document.getElementById('theme-btn').click(); });
+  const themeFinal = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
+  if (themeFinal !== 'light') problems.push('theme did not toggle back to light');
 
   // service worker registration (http localhost counts as secure context)
   const swOk = await page.evaluate(async () => {

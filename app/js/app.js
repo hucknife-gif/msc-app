@@ -37,35 +37,145 @@ const store = {
   set reportTab(v) { sessionStorage.setItem('msc.reportTab', v); }
 };
 
-// live data adapter: try the public MSC API, fall back to bundled sample.
-// Fetched values are rendered as text only (esc()), never as markup.
+// ---------------------------------------------------------------
+// Live data adapter — MSC public report API (CORS-open, no auth).
+// All fetched values are treated as untrusted text: rendered only
+// through esc(), types coerced, numbers clamped. Falls back to the
+// bundled sample when offline or unpublished.
+// ---------------------------------------------------------------
 const live = { reports: null, tried: false };
 
-async function tryLiveFetch() {
-  if (live.tried) return;
-  live.tried = true;
-  try {
-    const today = new Date().toISOString().slice(0, 10);
-    const res = await fetch('https://api.mountainsafetycollective.org/report/get_view_data_by_date', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ date: today }),
-      signal: AbortSignal.timeout(6000)
-    });
-    if (!res.ok) return;
-    const json = await res.json();
-    if (json && Array.isArray(json.reports) && json.reports.length) {
-      live.reports = json.reports;
-      render(); // repaint with the live badge + any mapped fields
+const sydneyDate = (back = 0) => {
+  const d = new Date(Date.now() - back * 86400000);
+  return d.toLocaleDateString('en-CA', { timeZone: 'Australia/Sydney' }); // YYYY-MM-DD
+};
+
+// severity heuristic for live rating strings (colour only; text is theirs)
+function keywordSev(s) {
+  const t = String(s).toLowerCase();
+  if (/high|severe|warning|whiteout|travel not|extreme|icy/.test(t)) return 3;
+  if (/considerable|poor|extra/.test(t)) return 2;
+  if (/moderate|notable|firm/.test(t)) return 1;
+  if (/low|good|soft|mild|nil|usual|clear/.test(t)) return 0;
+  return 1;
+}
+// MSC's own day-score algorithm (from their report app): sum the band's
+// hazard ratings — >=8 Travel Not Recommended, 4–7 Extra Caution, <=3 Usual
+// Caution; a non-zero override rating replaces the sum.
+const ratingToScore = (n) => n >= 8 ? 'travel-not-recommended' : n >= 4 ? 'extra-caution' : 'usual-caution';
+
+const CATEGORY_MAP = {
+  'weather conditions': 'exposure', 'visibility': 'visibility',
+  'surface conditions': 'surface', 'avalanche danger': 'avalanche'
+};
+
+function mapLiveBand(entries, override) {
+  const dangers = {};
+  let sum = 0;
+  for (const e of Array.isArray(entries) ? entries : []) {
+    const key = CATEGORY_MAP[String(e?.category || '').trim().toLowerCase()];
+    if (!key) continue;
+    const name = String(e?.name || '').trim() || '—';
+    dangers[key] = name;
+    sum += parseInt(e?.rating, 10) || 0;
+  }
+  const ov = parseInt(override, 10) || 0;
+  return { dangers, score: ratingToScore(ov > 0 ? ov : sum) };
+}
+
+// split their travel blob into per-band bullet lists on Alpine/Subalpine headings
+function splitTravel(blob) {
+  const out = { alpine: [], subalpine: [] };
+  let bucket = null;
+  for (const raw of String(blob || '').split('\n')) {
+    const line = raw.replace(/^[-•*\s]+/, '').trim();
+    if (!line) continue;
+    if (/^alpine\b/i.test(line)) { bucket = 'alpine'; continue; }
+    if (/^sub[- ]?alpine\b/i.test(line)) { bucket = 'subalpine'; continue; }
+    if (bucket) out[bucket].push(line);
+    else { out.alpine.push(line); out.subalpine.push(line); }
+  }
+  return out;
+}
+
+function mapLiveReport(raw) {
+  const r = raw?.report || {};
+  const alpine = mapLiveBand(raw?.alpine_hazards, r.override_alpine_rating);
+  const subalpine = mapLiveBand(raw?.sub_alpine_hazards, r.override_sub_alpine_rating);
+  const travel = splitTravel(r.travel_and_terrain_advice);
+  const tiers = { primary: 1, secondary: 2, tertiary: 3 };
+  const hazards = (Array.isArray(raw?.categorisation) ? raw.categorisation : []).map((c) => {
+    const tier = String(c?.type || 'Primary');
+    const elev = String(c?.elevation || '').toLowerCase();
+    const isAv = !!c?.characteristic; // non-avalanche entries have null characteristic
+    const lk = LIKELIHOODS.find((l) => l.toLowerCase() === String(c?.likelihood || '').trim().toLowerCase());
+    const sizeId = parseInt(c?.avalanche_sizes_id, 10);
+    return {
+      n: tiers[tier.toLowerCase()] || 1, tier,
+      name: String(c?.characteristic || c?.hazard || 'Hazard').trim(),
+      type: isAv ? 'avalanche' : 'other',
+      desc: String(c?.summary || '').trim(),
+      about: String(c?.characteristic_info || '').trim(),
+      bands: [elev.includes('sub') ? 'subalpine' : 'alpine'],
+      aspects: [String(c?.aspect || '').trim().toUpperCase()].filter((a) => ASPECT_ORDER.includes(a)),
+      size: isAv && sizeId ? Math.min(3, Math.max(1, sizeId)) : null,
+      likelihood: isAv ? (lk || null) : null
+    };
+  }).sort((a, b) => a.n - b.n);
+
+  return {
+    live: true, sample: false,
+    issued: String(r.date || ''),
+    preparedBy: String(r.published_by || r.created_by || 'MSC'),
+    confidence: String(r.forecast_confidence || '—'),
+    confidenceNote: String(r.forecast_confidence_summary || '').trim(),
+    dayScore: alpine.score,
+    synopsis: String(r.regional_outlook || '').trim(),
+    weatherSummary: String(r.weather_summary || '').trim(),
+    details: [String(r.snowpack_summary || '').trim(), String(r.hazard_summary || '').trim()].filter(Boolean).join(' '),
+    hazards,
+    bands: {
+      alpine: { score: alpine.score, dangers: alpine.dangers, travel: travel.alpine },
+      subalpine: { score: subalpine.score, dangers: subalpine.dangers, travel: travel.subalpine }
     }
-  } catch { /* offline or CORS-blocked — sample data stands in */ }
+  };
+}
+
+function liveRegionId(regionStr) {
+  const s = String(regionStr || '').toLowerCase();
+  if (s.includes('main')) return 'main-range';
+  if (s.includes('divid')) return 'dividing-range';
+  return null;
+}
+
+async function tryLiveFetch() {
+  if (live.tried || localStorage.getItem('msc.disableLive')) return;
+  live.tried = true;
+  for (const back of [0, 1]) {
+    try {
+      const res = await fetch('https://api.mountainsafetycollective.org/report/get_view_data_by_date', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: sydneyDate(back) }),
+        signal: AbortSignal.timeout(6000)
+      });
+      if (!res.ok) continue;
+      const json = await res.json();
+      if (json?.status === 1 && Array.isArray(json.reports) && json.reports.length) {
+        const mapped = {};
+        for (const rep of json.reports) {
+          const id = liveRegionId(rep?.report?.region);
+          if (id) mapped[id] = mapLiveReport(rep);
+        }
+        if (Object.keys(mapped).length) { live.reports = mapped; render(); return; }
+      }
+    } catch { /* offline — sample data stands in */ }
+  }
 }
 
 function currentReport() {
-  // Live API mapping is conservative: until the response schema is confirmed
-  // in the wild we surface liveness via the badge and keep the structured
-  // sample; a confirmed schema can be mapped here later.
-  const base = SAMPLE_REPORTS[store.region];
+  // precedence: forecaster override > live MSC report > bundled sample
+  const base = live.reports?.[store.region] || SAMPLE_REPORTS[store.region];
   const ov = Store.override(store.region);
   if (!ov) return base;
   // forecaster override: shallow-merge top level, deep-merge band fields
@@ -80,7 +190,10 @@ function currentReport() {
 }
 
 // ---------- shared renderers ----------
-function sevClass(cat, lvl) { return 'sev-' + (LEVEL_SEVERITY[cat]?.[lvl] ?? 1); }
+function sevClass(cat, lvl) {
+  const v = LEVEL_SEVERITY[cat]?.[lvl];
+  return 'sev-' + (v ?? keywordSev(lvl));
+}
 
 // bulletin-rule section header: title left, field-note metadata right
 function rule(title, meta = '') {
@@ -382,15 +495,18 @@ function viewToday() {
     <div class="card"><p style="font-size:15px">${esc(rep.synopsis)}</p></div>
 
     ${rep.updated ? `<div class="card update-note"><p class="sub">Updated by <strong>${esc(rep.updated.by)}</strong> · ${esc(new Date(rep.updated.at).toLocaleString('en-AU', { hour12: false }))}</p></div>` : ''}
-    ${rule('Station snapshot', 'Forecast 24 h')}
+    ${rule('Station snapshot', rep.live ? 'MSC weather summary' : 'Forecast 24 h')}
+    ${rep.weather ? `
     <div class="kv">
       <div class="cell"><div class="k">Temp (alpine)</div><div class="v">${esc(rep.weather.temp)}</div></div>
       <div class="cell"><div class="k">Wind</div><div class="v">${esc(rep.weather.wind)}</div></div>
       <div class="cell"><div class="k">Freezing level</div><div class="v">${esc(rep.weather.freezing)}</div></div>
       <div class="cell"><div class="k">Snow next 24 h</div><div class="v">${esc(rep.weather.snow24)}</div></div>
-    </div>
+    </div>` : `
+    <div class="card"><p style="font-size:15px">${esc(rep.weatherSummary || 'No weather summary published.')}</p>
+    ${rep.confidenceNote ? `<p class="sub" style="margin-top:8px">Confidence: ${esc(rep.confidenceNote)}</p>` : ''}</div>`}
 
-    ${Store.custom().modules.charts !== false ? `
+    ${!rep.live && Store.custom().modules.charts !== false ? `
     <div class="card chart-card">
       <div class="chart-head"><span class="chart-t">Temperature</span><span class="chart-u">°C · alpine</span></div>
       ${lineChart(rep.trend.temp, rep.trend.hours, '°', 'tmp')}
@@ -400,7 +516,7 @@ function viewToday() {
       ${barChart(rep.trend.snow, rep.trend.hours, 'cm')}
     </div>` : ''}
 
-    ${Store.custom().modules.rose !== false ? `
+    ${!rep.live && Store.custom().modules.rose !== false ? `
     ${rule('Wind loading', 'Alpine · by aspect')}
     <div class="card rose-card">
       ${aspectRose(rep.aspects.alpine)}
@@ -476,7 +592,77 @@ function viewReport() {
     </div>
     ${body}
     ${Store.role() === 'forecaster' ? `<a class="btn secondary" href="#/edit">Edit this forecast</a>` : ''}
+    <a class="card tappable" href="#/archive" style="margin-top:12px"><div class="row">${icon('clock', 'icon accent')}
+      <div class="grow"><h3>Recent forecasts</h3><div class="sub">${Store.hasRole('member') ? 'Browse past reports from the MSC archive' : 'Member feature — sign in to browse the archive'}</div></div>
+      ${icon('chevR', 'icon chev')}</div></a>
     <p class="note">Modelled on the MSC report format. Always read the real report before travelling: reports.mountainsafetycollective.org</p>`;
+}
+
+// ---------- archive: recent forecasts (member tier and above) ----------
+const archive = { date: null, data: null, loading: false, error: null };
+
+async function fetchArchive(date) {
+  archive.date = date; archive.data = null; archive.error = null; archive.loading = true;
+  render();
+  try {
+    const res = await fetch('https://api.mountainsafetycollective.org/report/get_view_data_by_date', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date }),
+      signal: AbortSignal.timeout(8000)
+    });
+    const json = res.ok ? await res.json() : null;
+    if (json?.status === 1 && Array.isArray(json.reports) && json.reports.length) {
+      const mapped = {};
+      for (const rep of json.reports) {
+        const id = liveRegionId(rep?.report?.region);
+        if (id) mapped[id] = mapLiveReport(rep);
+      }
+      archive.data = mapped;
+    } else {
+      archive.error = 'No report was published for that date.';
+    }
+  } catch {
+    archive.error = 'Could not reach the MSC report service — check your connection.';
+  }
+  archive.loading = false;
+  render();
+}
+
+function viewArchive() {
+  if (!Store.hasRole('member')) {
+    return `<h1>Recent forecasts<span class="h1-sub">A member feature</span></h1>
+      <div class="card"><h3>Learn from the pattern, not just the day</h3>
+      <p class="sub" style="margin-top:6px">Members can browse past daily reports to see how the season's snowpack story developed. Sign in with a member, observer or forecaster account.</p></div>
+      <a class="btn" href="#/account">Sign in</a>`;
+  }
+  const rep = archive.data?.[store.region];
+  return `
+    ${regionToggle()}
+    <h1>Recent forecasts<span class="h1-sub">Browse the archive — reports load live from MSC</span></h1>
+    <div class="card">
+      <label for="arch-date">Report date</label>
+      <input id="arch-date" type="date" value="${esc(archive.date || sydneyDate(1))}" max="${esc(sydneyDate(0))}">
+      <button class="btn" id="arch-load">Load report</button>
+    </div>
+    ${archive.loading ? `<div class="card"><p class="sub">Loading report…</p></div>` : ''}
+    ${archive.error ? `<div class="card"><p class="sub" role="alert">${esc(archive.error)}</p></div>` : ''}
+    ${rep ? `
+      <div class="row" style="justify-content:space-between;margin-bottom:8px">
+        <span class="badge live"><span class="dot"></span>MSC archive</span>
+        <span class="note" style="margin:0">Issued ${esc(rep.issued)} · ${esc(rep.preparedBy)} · Confidence ${esc(rep.confidence)}</span>
+      </div>
+      <div class="card rating-card">
+        ${splitTriangle({ alpine: DAY_SCORES[rep.bands.alpine.score].color, subalpine: DAY_SCORES[rep.bands.subalpine.score].color }, 'lg')}
+        <div class="rating-bands">
+          <div class="rating-band"><span class="rb-label">Alpine</span>${scoreBanner(rep.bands.alpine.score)}</div>
+          <div class="rating-band"><span class="rb-label">Subalpine</span>${scoreBanner(rep.bands.subalpine.score)}</div>
+        </div>
+      </div>
+      ${rule('Regional outlook', esc(archive.date || ''))}
+      <div class="card article"><p>${esc(rep.synopsis)}</p></div>
+      ${(rep.hazards || []).map(hazardCard).join('')}
+    ` : (!archive.loading && !archive.error ? `<p class="lede">Pick a date to load that day's report.</p>` : '')}`;
 }
 
 // ---------- account, forecast editor ----------
@@ -496,8 +682,10 @@ function viewAccount() {
       <div class="card">
         <h3>Demo accounts</h3>
         <div class="sub" style="margin-top:6px">
-          <strong>forecaster</strong> / PIN 2626 — edit and publish the forecast, customise the app<br>
-          <strong>observer</strong> / PIN 1850 — record field observations and snow profiles
+          <strong>forecaster</strong> / PIN 2626 — build and publish forecasts, customise the app<br>
+          <strong>observer</strong> / PIN 1850 — field observations, snow profiles, archive access<br>
+          <strong>member</strong> / PIN 0000 — recent-forecast archive and member content<br>
+          No login (base tier) — today's report, learning content and safety tools
         </div>
       </div>
       <p class="note">This build stores accounts and data on this device only. Multi-user sync needs the hosted backend (next step on the roadmap).</p>`;
@@ -766,7 +954,7 @@ const TABS = [
   { path: '#/safety',  label: 'Safety',  icon: 'cross',      render: viewSafety }
 ];
 
-const EXTRA_VIEWS = { '#/account': viewAccount, '#/edit': viewEdit };
+const EXTRA_VIEWS = { '#/account': viewAccount, '#/edit': viewEdit, '#/archive': viewArchive };
 
 function render() {
   const hash = location.hash || '#/today';
@@ -810,6 +998,13 @@ function bindView() {
       b.setAttribute('aria-expanded', String(open));
       b.textContent = open ? 'About –' : 'About +';
     }));
+
+  // archive loader
+  const al = $('#arch-load');
+  if (al) al.addEventListener('click', () => {
+    const d = $('#arch-date').value;
+    if (d) fetchArchive(d);
+  });
 
   // login / logout / customisation
   const lf = $('#login-form');
