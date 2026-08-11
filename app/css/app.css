@@ -41,7 +41,7 @@
   --line-strong: rgba(18, 39, 54, 0.24);
   --text: #17242d;
   --mist: #54646d;
-  --mist-faint: #83939c;
+  --mist-faint: #64757f;   /* 4.65:1 on paper — was #83939c (3.09:1, failed small-text AA) */
 
   --accent-red: #ed1c24;
   --accent-orange: #f15a24;
@@ -91,7 +91,7 @@ html[data-theme="dark"] {
   --line-strong: rgba(214, 236, 240, 0.26);
   --text: #edf6f7;
   --mist: #9cb9c6;
-  --mist-faint: #62808f;
+  --mist-faint: #6f8d9c;   /* 5.09:1 on alpine night — was #62808f (4.27:1) */
 
   --accent-red: #ff575e;      /* lifted for dark-bg contrast */
   --accent-orange: #f57544;
@@ -328,6 +328,13 @@ html[data-theme="dark"] .badge.update { color: #7fd4ee; }
 .hazard-chip .name { font-family: var(--mono); font-size: 10px; color: var(--mist-faint); text-transform: uppercase; letter-spacing: 0.1em; }
 .hazard-chip .lvl { font-family: var(--display); font-weight: 700; font-size: 21px; line-height: 1.05; letter-spacing: 0.03em; text-transform: uppercase; }
 .hazard-chip .hc-info { display: none; }
+/* live feed sometimes omits a category level (e.g. subalpine Surface) —
+   a bare label with an empty slot reads as broken; show an honest gap
+   marker instead. Data itself is untouched. */
+.hazard-chip .lvl:empty::before {
+  content: 'No rating';
+  color: var(--mist-faint); font-weight: 600; letter-spacing: 0.04em;
+}
 
 .sev-0 { background: var(--dgr-low); }
 .sev-1 { background: var(--dgr-moderate); }
@@ -436,7 +443,9 @@ ul.advice li::before {
 
 /* ---------- charts ---------- */
 .chart-card { padding-bottom: var(--space-3); }
-.chart { display: block; width: 100%; height: auto; margin-bottom: var(--space-2); }
+/* overflow visible: peak value labels sit above the topmost data point,
+   which is at the viewBox edge — default hidden overflow clips them in half */
+.chart { display: block; width: 100%; height: auto; margin-bottom: var(--space-2); overflow: visible; }
 .chart-head { display: flex; align-items: baseline; justify-content: space-between; margin: var(--space-2) 0 2px; }
 .chart-t { font-family: var(--display); font-weight: 600; font-size: 15px; letter-spacing: 0.09em; text-transform: uppercase; }
 .chart-u { font-family: var(--mono); font-size: 10px; color: var(--mist-faint); letter-spacing: 0.05em; text-transform: uppercase; }
@@ -707,4 +716,8 @@ input:focus, textarea:focus, select:focus, button:focus-visible, a:focus-visible
 @media (min-width: 700px) {
   .hazard-grid { grid-template-columns: repeat(4, 1fr); }
   .haz-graphics { grid-template-columns: repeat(4, 1fr); }
+  /* keep the chrome bar full-bleed but pin the six tab items over the
+     640px content column — items spread across the whole viewport read
+     as unfinished responsive work on wide screens */
+  .tabbar { padding-left: calc(50% - 320px); padding-right: calc(50% - 320px); }
 }
